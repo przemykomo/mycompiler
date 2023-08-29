@@ -1,56 +1,74 @@
 use crate::parser::*;
 use std::collections::HashMap;
+use std::iter::Peekable;
+use std::slice::Iter;
+
+struct CompilationState<'a> {
+    assembly : String,
+    iter : Peekable<Iter<'a, Statement>>,
+    stack_size : i32,
+    variables : HashMap<String, i32>
+}
 
 pub fn compile_to_assembly(abstract_syntax_tree: &Vec<Statement>) -> String {
-    let mut assembly : String = "global _start\n_start:\n".to_string();
-    let mut iter = abstract_syntax_tree.iter().peekable();
-    let mut stack_size : i32 = 0;
-    let mut variables = HashMap::<String, i32>::new(); // Identifier -> stack location
+    let mut state = CompilationState {
+        assembly : "global _start\n_start:\n".to_string(),
+        iter : abstract_syntax_tree.iter().peekable(),
+        stack_size : 0,
+        variables : HashMap::<String, i32>::new() // Identifier -> stack location
+    };
 
-    while let Some(statement) = iter.next() {
+    while let Some(statement) = state.iter.next() {
         match statement {
             Statement::Exit(expression) => {
-                match expression {
-                    Expression::IntLiteral(exit_value) => {
-                        let to_append = format!("mov rax, 60\n mov rdi, {}\n syscall", exit_value);
-                        assembly.push_str(&to_append);
-                    },
-                    Expression::Identifier(identifier) => {
-                        if !variables.contains_key(identifier) {
-                            panic!("Undeclared identifier: \"{}\"", identifier);
-                        }
-                        let stack_location = variables.get(identifier).unwrap();
-                        let to_append = format!("push QWORD [rsp + {}]\n mov rax, 60\n pop rdi\n syscall", (stack_size - stack_location - 1) * 8);
-                        assembly.push_str(&to_append);
-                    }
-                }
+                compile_expression(&mut state, expression);
+                state.assembly.push_str("mov rdi, rax\n mov rax, 60\n syscall");
             },
             Statement::VariableDefinition { identifier, expression } => {
-                if variables.contains_key(identifier) {
+                if state.variables.contains_key(identifier) {
                     panic!("Variable \"{}\" already exists!", identifier);
                 }
 
-                match expression {
-                    Expression::IntLiteral(value) => {
-                        variables.insert(identifier.clone(), stack_size);
-                        let to_append = format!("mov rax, {}\n push rax\n", value);
-                        assembly.push_str(&to_append);
-                        stack_size += 1;
-                    },
-                    Expression::Identifier(other) => {
-                        if !variables.contains_key(other) {
-                            panic!("Undeclared identifier: \"{}\"", other);
-                        }
-                        variables.insert(identifier.clone(), stack_size);
-                        let stack_location = variables.get(other).unwrap();
-                        let to_append = format!("push QWORD [rsp + {}]\n", (stack_size - stack_location - 1) * 8);
-                        assembly.push_str(&to_append);
-                        stack_size += 1;
-                    }
-                }
+                compile_expression(&mut state, expression);
+                state.variables.insert(identifier.clone(), state.stack_size);
+                state.assembly.push_str("push rax\n");
+                state.stack_size += 1;
             }
         }
     }
 
-    return assembly;
+    return state.assembly;
+}
+
+fn compile_expression(state: &mut CompilationState, expression: &Expression) {
+    match expression {
+        Expression::IntLiteral(value) => {
+            let to_append = format!("mov rax, {}\n", value);
+            state.assembly.push_str(&to_append);
+        },
+        Expression::Identifier(other) => {
+            if !state.variables.contains_key(other) {
+                panic!("Undeclared identifier: \"{}\"", other);
+            }
+            let stack_location = state.variables.get(other).unwrap();
+            let to_append = format!("mov rax, QWORD [rsp + {}]\n", (state.stack_size - stack_location - 1) * 8);
+            state.assembly.push_str(&to_append);
+        },
+        Expression::Add { left, right } => {
+            compile_expression(state, right);
+            state.assembly.push_str("push rax\n");
+            state.stack_size += 1;
+            compile_expression(state, left);
+            state.assembly.push_str("pop rbx\n add rax, rbx\n");
+            state.stack_size -= 1;
+        },
+        Expression::Multiply { left, right } => {
+            compile_expression(state, right);
+            state.assembly.push_str("push rax\n");
+            state.stack_size += 1;
+            compile_expression(state, left);
+            state.assembly.push_str("pop rbx\n imul rbx\n");
+            state.stack_size -= 1;
+        }
+    }
 }

@@ -5,7 +5,9 @@ pub enum Token {
     Semicolon,
     Let,
     Identifier(String),
-    EqualSign
+    EqualSign,
+    PlusSign,
+    MultiplySign
 }
 
 pub fn tokenize(contents: &str) -> Vec<Token> {
@@ -57,6 +59,10 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
             tokens.push(Token::Semicolon);
         } else if c == '=' {
             tokens.push(Token::EqualSign);
+        } else if c == '+' {
+            tokens.push(Token::PlusSign);
+        } else if c == '*' {
+            tokens.push(Token::MultiplySign);
         }
     }
 

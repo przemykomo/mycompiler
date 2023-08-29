@@ -21,7 +21,6 @@ fn main() {
     let read_file_path = &args[1];
     let write_file_path = &args[2];
 
-    println!("Reading file {}", read_file_path);
     let contents = fs::read_to_string(read_file_path).expect("Should have been able to read the file.");
     println!("{}", contents);
 
@@ -34,7 +33,6 @@ fn main() {
     let assembly = compile_to_assembly(&abstract_syntax_tree);
     dbg!(&assembly);
 
-    println!("Writing to file {}", write_file_path);
     let mut file = fs::File::create(write_file_path).expect("Should have been able to open this file for writing");
     file.write_all(assembly.as_bytes()).expect("Should have been able to write to this file.");
 }

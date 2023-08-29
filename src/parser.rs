@@ -7,7 +7,9 @@ pub enum Expression {
     IntLiteral(i32),
     Identifier(String),
     Add{ left: Box<Expression>, right: Box<Expression> },
-    Multiply{ left: Box<Expression>, right: Box<Expression> }
+    Multiply{ left: Box<Expression>, right: Box<Expression> },
+    Subtract{ left: Box<Expression>, right: Box<Expression> },
+    Divide{ left: Box<Expression>, right: Box<Expression> }
 }
 
 #[derive(Debug)]
@@ -63,6 +65,10 @@ fn parse_addition(iter: &mut Peekable<Iter<Token>>) -> Expression {
             iter.next();
             let primitive = parse_multiplication(iter);
             left = Expression::Add { left: Box::new(left), right: Box::new(primitive) };
+        } else if let Token::MinusSign = token {
+            iter.next();
+            let primitive = parse_multiplication(iter);
+            left = Expression::Subtract{ left: Box::new(left), right: Box::new(primitive) };
         } else {
             return left;
         }
@@ -79,6 +85,10 @@ fn parse_multiplication(iter: &mut Peekable<Iter<Token>>) -> Expression {
             iter.next();
             let primitive = parse_atom(iter);
             left = Expression::Multiply { left: Box::new(left), right: Box::new(primitive) };
+        } else if let Token::DivisionSign = token {
+            iter.next();
+            let primitive = parse_atom(iter);
+            left = Expression::Divide { left: Box::new(left), right: Box::new(primitive) };
         } else {
             return left;
         }
@@ -96,34 +106,3 @@ fn parse_atom(iter: &mut Peekable<Iter<Token>>) -> Expression {
         }
     }
 }
-
-/*
-fn parse_expression(iter: &mut Peekable<Iter<Token>>) -> Expression {
-    let mut my_expression : Expression;
-
-    match iter.next() {
-        Some(Token::IntLiteral(value)) => {
-            my_expression = Expression::IntLiteral(*value);
-        },
-        Some(Token::Identifier(other)) => {
-            my_expression = Expression::Identifier(other.clone());
-        },
-        _ => {
-            panic!("NO!");
-        }
-    }
-
-    match iter.peek() {
-        Some(Token::PlusSign) => {
-            iter.next();
-            my_expression = Expression::Add { left: Box::new(my_expression), right: Box::new(parse_expression(iter)) };
-        },
-        Some(Token::MultiplySign) => {
-            iter.next();
-            my_expression = Expression::Multiply{ left: Box::new(my_expression), right: Box::new(parse_expression(iter)) };
-        },
-        _ => {}
-    }
-
-    return my_expression;
-}*/

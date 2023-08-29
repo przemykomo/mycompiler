@@ -69,6 +69,22 @@ fn compile_expression(state: &mut CompilationState, expression: &Expression) {
             compile_expression(state, left);
             state.assembly.push_str("pop rbx\n imul rbx\n");
             state.stack_size -= 1;
-        }
+        },
+        Expression::Subtract{ left, right } => {
+            compile_expression(state, right);
+            state.assembly.push_str("push rax\n");
+            state.stack_size += 1;
+            compile_expression(state, left);
+            state.assembly.push_str("pop rbx\n sub rax, rbx\n");
+            state.stack_size -= 1;
+        },
+        Expression::Divide{ left, right } => {
+            compile_expression(state, right);
+            state.assembly.push_str("push rax\n");
+            state.stack_size += 1;
+            compile_expression(state, left);
+            state.assembly.push_str("pop rbx\n idiv rbx\n");
+            state.stack_size -= 1;
+        },
     }
 }

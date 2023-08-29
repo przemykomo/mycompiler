@@ -7,7 +7,9 @@ pub enum Token {
     Identifier(String),
     EqualSign,
     PlusSign,
-    MultiplySign
+    MultiplySign,
+    MinusSign,
+    DivisionSign
 }
 
 pub fn tokenize(contents: &str) -> Vec<Token> {
@@ -54,6 +56,8 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
 
             if let Ok(num) = buffer.parse::<i32>() {
                 tokens.push(Token::IntLiteral(num));
+            } else if buffer == "-" {
+                tokens.push(Token::MinusSign);
             }
         } else if c == ';' {
             tokens.push(Token::Semicolon);
@@ -63,6 +67,8 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
             tokens.push(Token::PlusSign);
         } else if c == '*' {
             tokens.push(Token::MultiplySign);
+        } else if c == '/' {
+            tokens.push(Token::DivisionSign);
         }
     }
 

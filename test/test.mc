@@ -1,3 +1,2 @@
-let x = 5;
-let y = 7;
-exit x * 3 + 4 + 4 * y;
+let x = 20;
+exit x / 4;

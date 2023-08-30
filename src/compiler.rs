@@ -33,6 +33,26 @@ pub fn compile_to_assembly(abstract_syntax_tree: &Vec<Statement>) -> String {
                 state.variables.insert(identifier.clone(), state.stack_size);
                 state.assembly.push_str("push rax\n");
                 state.stack_size += 1;
+            },
+            Statement::Increment(identifier) => {
+                if !state.variables.contains_key(identifier) {
+                    panic!("Undeclared identifier: \"{}\"", identifier);
+                }
+
+                let stack_location = state.variables.get(identifier).unwrap();
+                let offset = (state.stack_size - stack_location - 1) * 8;
+                let to_append = format!("mov rax, QWORD [rsp + {0}]\n inc rax\n mov QWORD [rsp + {0}], rax\n", offset);
+                state.assembly.push_str(&to_append);
+            },
+            Statement::Decrement(identifier) => {
+                if !state.variables.contains_key(identifier) {
+                    panic!("Undeclared identifier: \"{}\"", identifier);
+                }
+
+                let stack_location = state.variables.get(identifier).unwrap();
+                let offset = (state.stack_size - stack_location - 1) * 8;
+                let to_append = format!("mov rax, QWORD [rsp + {0}]\n dec rax\n mov QWORD [rsp + {0}], rax\n", offset);
+                state.assembly.push_str(&to_append);
             }
         }
     }

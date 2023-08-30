@@ -1,2 +1,3 @@
 let x = 20;
-exit x / 4;
+x--;
+exit x;

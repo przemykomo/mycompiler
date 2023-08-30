@@ -15,7 +15,9 @@ pub enum Expression {
 #[derive(Debug)]
 pub enum Statement {
     Exit(Expression),
-    VariableDefinition { identifier: String, expression: Expression }
+    VariableDefinition { identifier: String, expression: Expression },
+    Increment(String),
+    Decrement(String)
 }
 
 pub fn parse(tokens: &Vec<Token>) -> Vec<Statement> {
@@ -45,6 +47,27 @@ pub fn parse(tokens: &Vec<Token>) -> Vec<Statement> {
                     abstract_syntax_tree.push(Statement::VariableDefinition { identifier: identifier.clone(), expression: my_expression });
                 }
             },
+            Token::Identifier(identifier) => {
+                match iter.next() {
+                    Some(Token::PlusSign) => {
+                        if let Some(Token::PlusSign) = iter.next() {
+                            abstract_syntax_tree.push(Statement::Increment(identifier.clone()));
+                        } else {
+                            panic!();
+                        }
+                    },
+                    Some(Token::MinusSign) => {
+                        if let Some(Token::MinusSign) = iter.next() {
+                            abstract_syntax_tree.push(Statement::Decrement(identifier.clone()));
+                        } else {
+                            panic!();
+                        }
+                    }
+                    _ => {
+                        panic!("Syntax error.");
+                    }
+                }
+            }
             _ => {}
         }
     }

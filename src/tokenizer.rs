@@ -9,7 +9,13 @@ pub enum Token {
     PlusSign,
     MultiplySign,
     MinusSign,
-    DivisionSign
+    DivisionSign,
+    ParenthesisOpen,
+    ParenthesisClose,
+    Function,
+    CurlyBracketOpen,
+    CurlyBracketClose,
+    Public
 }
 
 pub fn tokenize(contents: &str) -> Vec<Token> {
@@ -19,11 +25,11 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
 
     while let Some(mut c) = iter.next() {
         buffer = String::new();
-        if c.is_alphabetic() {
+        if c.is_alphabetic() || c == '_' {
             loop {
                 buffer.push(c);
                 if let Some(temp) = iter.peek() {
-                    if temp.is_alphanumeric() {
+                    if temp.is_alphanumeric() || c == '_' {
                         c = iter.next().unwrap();
                     } else {
                         break;
@@ -33,13 +39,14 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
                 }
             }
 
-            if buffer == "exit" {
-                tokens.push(Token::Exit);
-            } else if buffer == "let" {
-                tokens.push(Token::Let);
-            } else {
-                tokens.push(Token::Identifier(buffer));
-            }
+            tokens.push(
+                match buffer.as_str() {
+                    "exit" => Token::Exit,
+                    "let" => Token::Let,
+                    "fn" => Token::Function,
+                    "public" => Token::Public,
+                    _ => Token::Identifier(buffer)
+                });
         } else if c.is_ascii_digit() || c == '-' {
             loop {
                 buffer.push(c);
@@ -59,16 +66,20 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
             } else if buffer == "-" {
                 tokens.push(Token::MinusSign);
             }
-        } else if c == ';' {
-            tokens.push(Token::Semicolon);
-        } else if c == '=' {
-            tokens.push(Token::EqualSign);
-        } else if c == '+' {
-            tokens.push(Token::PlusSign);
-        } else if c == '*' {
-            tokens.push(Token::MultiplySign);
-        } else if c == '/' {
-            tokens.push(Token::DivisionSign);
+        } else {
+            tokens.push(
+                    match c {
+                        ';' => Token::Semicolon,
+                        '=' => Token::EqualSign,
+                        '+' => Token::PlusSign,
+                        '*' => Token::MultiplySign,
+                        '/' => Token::DivisionSign,
+                        '(' => Token::ParenthesisOpen,
+                        ')' => Token::ParenthesisClose,
+                        '{' => Token::CurlyBracketOpen,
+                        '}' => Token::CurlyBracketClose,
+                        _ => continue
+                });
         }
     }
 

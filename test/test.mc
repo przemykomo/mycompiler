@@ -1,3 +1,3 @@
-let x = 20;
-x--;
-exit x;
+public fn _start() {
+    exit 5;
+}

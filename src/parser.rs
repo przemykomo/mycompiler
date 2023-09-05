@@ -19,7 +19,8 @@ pub enum Statement {
     VariableDefinition { identifier: String, expression: Expression },
     VariableAssigment { identifier: String, expression: Expression },
     Increment(String),
-    Decrement(String)
+    Decrement(String),
+    FunctionCall { identifier: String }
 }
 
 #[derive(Debug)]
@@ -113,7 +114,12 @@ pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
                         }
                     },
                     Some(Token::EqualSign) => {
-                        abstract_syntax_tree.push(Statement::VariableAssigment {identifier: identifier.clone(), expression: parse_expression(iter)});
+                        abstract_syntax_tree.push(Statement::VariableAssigment { identifier: identifier.clone(), expression: parse_expression(iter) });
+                    },
+                    Some(Token::ParenthesisOpen) => {
+                        if let Some(Token::ParenthesisClose) = iter.next() {
+                            abstract_syntax_tree.push(Statement::FunctionCall { identifier: identifier.clone() });
+                        }
                     }
                     _ => {
                         panic!("Syntax error.");

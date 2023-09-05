@@ -2,6 +2,8 @@ use crate::parser::*;
 use std::collections::HashMap;
 use std::iter::Peekable;
 use std::slice::Iter;
+use indoc::formatdoc;
+use indoc::indoc;
 
 struct CompilationState<> {
     assembly : String,
@@ -28,7 +30,7 @@ pub fn compile_to_assembly(functions: &Vec<Function>) -> String {
         }
         //TODO: make compile_scope return information about used registries and only push those.
         //Use scratch registries only if possible.
-        to_append = format!("{}:
+        to_append = formatdoc!("{}:
                                 push rbx
                                 push r12
                                 push r13
@@ -43,14 +45,15 @@ pub fn compile_to_assembly(functions: &Vec<Function>) -> String {
             variables : HashMap::<String, i32>::new() // Identifier -> stack location
         };
         compile_scope(&mut compilation_state, &mut scope_state);
-        compilation_state.assembly.push_str("mov rsp, rbp
-                                            pop rbp
-                                            pop r15
-                                            pop r14
-                                            pop r13
-                                            pop r12
-                                            pop rbx
-                                            ret\n")
+        to_append = indoc!("mov rsp, rbp
+                            pop rbp
+                            pop r15
+                            pop r14
+                            pop r13
+                            pop r12
+                            pop rbx
+                            ret\n").to_string();
+        compilation_state.assembly.push_str(&to_append);
     }
 
     return compilation_state.assembly;
@@ -101,6 +104,28 @@ fn compile_scope(compilation_state: &mut CompilationState, state: &mut ScopeStat
                 let stack_location = state.variables.get(identifier).unwrap();
                 let offset = (state.stack_size - stack_location - 1) * 8;
                 let to_append = format!("mov rax, QWORD [rsp + {0}]\n dec rax\n mov QWORD [rsp + {0}], rax\n", offset);
+                compilation_state.assembly.push_str(&to_append);
+            },
+            Statement::FunctionCall { identifier } => {
+                let to_append = formatdoc!("push rax,
+                                            push rdi
+                                            push rsi
+                                            push rdx
+                                            push rcx
+                                            push r8
+                                            push r9
+                                            push r10
+                                            push r11
+                                            call {}
+                                            pop r11
+                                            pop r10
+                                            pop r9
+                                            pop r8
+                                            pop rcx
+                                            pop rdx
+                                            pop rsi
+                                            pop rdi
+                                            pop rax\n", identifier);
                 compilation_state.assembly.push_str(&to_append);
             }
         }

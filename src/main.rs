@@ -27,10 +27,10 @@ fn main() {
     let tokens = tokenize(&contents);
     dbg!(&tokens);
 
-    let functions = parse(&tokens);
-    dbg!(&functions);
+    let parsed_unit = parse(&tokens);
+    dbg!(&parsed_unit);
 
-    let assembly = compile_to_assembly(&functions);
+    let assembly = compile_to_assembly(&parsed_unit);
     dbg!(&assembly);
 
     let mut file = fs::File::create(write_file_path).expect("Should have been able to open this file for writing");

@@ -10,7 +10,8 @@ pub enum Expression {
     Add { left: Box<Expression>, right: Box<Expression> },
     Multiply { left: Box<Expression>, right: Box<Expression> },
     Subtract { left: Box<Expression>, right: Box<Expression> },
-    Divide { left: Box<Expression>, right: Box<Expression> }
+    Divide { left: Box<Expression>, right: Box<Expression> },
+    StringLiteral(String)
 }
 
 #[derive(Debug)]
@@ -20,7 +21,7 @@ pub enum Statement {
     VariableAssigment { identifier: String, expression: Expression },
     Increment(String),
     Decrement(String),
-    FunctionCall { identifier: String }
+    FunctionCall { identifier: String, arguments: Vec<String> }
 }
 
 #[derive(Debug)]
@@ -30,12 +31,28 @@ pub struct Function {
     pub body: Vec::<Statement>
 }
 
-pub fn parse(tokens: &Vec<Token>) -> Vec<Function> {
-    let mut functions = Vec::<Function>::new();
+#[derive(Debug)]
+pub struct ParsedUnit {
+    pub extern_declarations: Vec::<String>,
+    pub functions: Vec<Function>
+}
+
+pub fn parse(tokens: &Vec<Token>) -> ParsedUnit {
+    let mut parsed_unit = ParsedUnit {
+        extern_declarations: Vec::new(),
+        functions: Vec::new()
+    };
     let mut iter = tokens.iter().peekable();
 
     while let Some(token) = iter.next() {
         match token {
+            Token::Extern => {
+                if let Some((Token::Identifier(identifier), Token::Semicolon)) = iter.next_tuple() {
+                    parsed_unit.extern_declarations.push(identifier.to_string());
+                } else {
+                    panic!("Syntax error while parsing an extern statement.");
+                }
+            },
             Token::Function => {
                 if let Some((Token::Identifier(identifier), Token::ParenthesisOpen,
                     Token::ParenthesisClose, Token::CurlyBracketOpen)) = iter.next_tuple() {
@@ -44,7 +61,7 @@ pub fn parse(tokens: &Vec<Token>) -> Vec<Function> {
                         public: false,
                         body: parse_scope(&mut iter)
                     };
-                    functions.push(function);
+                    parsed_unit.functions.push(function);
                 } else {
                     panic!("Syntax error while paring function signature.");
                 }
@@ -57,7 +74,7 @@ pub fn parse(tokens: &Vec<Token>) -> Vec<Function> {
                         public: true,
                         body: parse_scope(&mut iter)
                     };
-                    functions.push(function);
+                    parsed_unit.functions.push(function);
                 } else {
                     panic!("Syntax error while paring function signature.");
                 }
@@ -68,7 +85,7 @@ pub fn parse(tokens: &Vec<Token>) -> Vec<Function> {
         }
     }
 
-    return functions;
+    return parsed_unit;
 }
 
 pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
@@ -76,10 +93,11 @@ pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
 
     while let Some(token) = iter.next() {
         match token {
+            /*
             Token::Exit => {
                 let my_expression: Expression = parse_expression(iter);
                 abstract_syntax_tree.push(Statement::Exit(my_expression));
-            },
+            },*/
             Token::Let => {
                 if let Some(Token::Identifier(identifier)) = iter.next() {
                     let my_expression: Expression;
@@ -117,8 +135,13 @@ pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
                         abstract_syntax_tree.push(Statement::VariableAssigment { identifier: identifier.clone(), expression: parse_expression(iter) });
                     },
                     Some(Token::ParenthesisOpen) => {
+                        let mut arguments : Vec<String> = Vec::new();
+                        while let Some(Token::Identifier(identifier)) = iter.peek() {
+                            iter.next();
+                            arguments.push(identifier.to_string());
+                        }
                         if let Some(Token::ParenthesisClose) = iter.next() {
-                            abstract_syntax_tree.push(Statement::FunctionCall { identifier: identifier.clone() });
+                            abstract_syntax_tree.push(Statement::FunctionCall { identifier: identifier.clone(), arguments });
                         }
                     }
                     _ => {
@@ -190,7 +213,8 @@ fn parse_atom(iter: &mut Peekable<Iter<Token>>) -> Expression {
                 panic!("Expecred closed parenthesis.");
             };
             expression
-        }
+        },
+        Some(Token::StringLiteral(value)) => Expression::StringLiteral(value.clone()),
         _ => {
             panic!("NO!");
         }

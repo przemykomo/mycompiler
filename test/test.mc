@@ -1,8 +1,9 @@
-public fn _start() {
-    internal();
-    exit 5;
-}
+extern internal;
+extern exit;
 
-fn internal() {
-    exit 3;
+public fn _start() {
+    let test = 5;
+    internal(test);
+    test++;
+    exit(test);
 }

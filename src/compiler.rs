@@ -15,12 +15,18 @@ struct ScopeState<'a> {
     variables: HashMap<String, i32>
 }
 
-pub fn compile_to_assembly(functions: &Vec<Function>) -> String {
+pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
     let mut compilation_state = CompilationState {
         assembly: String::new()
     };
 
-    let mut function_iter = functions.iter();
+    let mut extern_dec_iter = parsed_unit.extern_declarations.iter();
+    while let Some(extern_delcaration) = extern_dec_iter.next() {
+        let mut to_append = formatdoc!("extern {}\n", extern_delcaration);
+        compilation_state.assembly.push_str(&to_append);
+    }
+
+    let mut function_iter = parsed_unit.functions.iter();
 
     while let Some(function) = function_iter.next() {
         let mut to_append : String;
@@ -106,8 +112,30 @@ fn compile_scope(compilation_state: &mut CompilationState, state: &mut ScopeStat
                 let to_append = format!("mov rax, QWORD [rsp + {0}]\n dec rax\n mov QWORD [rsp + {0}], rax\n", offset);
                 compilation_state.assembly.push_str(&to_append);
             },
-            Statement::FunctionCall { identifier } => {
-                let to_append = formatdoc!("push rax,
+            Statement::FunctionCall { identifier, arguments } => {
+                let mut arguments_to_append : String = String::new();
+                for (i, argument) in arguments.iter().enumerate().rev()  {
+                    let stack_location = state.variables.get(argument).expect(&format!("Undeclared identifier: \"{}\"", argument));
+                    // + 9 for rax - r11 we push before this
+                    let offset = (state.stack_size - stack_location - 1 + 9) * 8;
+                    if i > 5 {
+                        let to_append = format!("mov rax, QWORD [rsp + {}]\npush rax", offset);
+                        arguments_to_append.push_str(&to_append);
+                    } else {
+                        let register = match i {
+                            0 => "rdi",
+                            1 => "rsi",
+                            2 => "rdx",
+                            3 => "rcx",
+                            4 => "r8",
+                            5 => "r9",
+                            _ => unreachable!()
+                        };
+                        let to_append = format!("mov {}, QWORD [rsp + {}]\n", register, offset);
+                        arguments_to_append.push_str(&to_append);
+                    }
+                }
+                let to_append = formatdoc!("push rax
                                             push rdi
                                             push rsi
                                             push rdx
@@ -116,6 +144,7 @@ fn compile_scope(compilation_state: &mut CompilationState, state: &mut ScopeStat
                                             push r9
                                             push r10
                                             push r11
+                                            {}
                                             call {}
                                             pop r11
                                             pop r10
@@ -125,7 +154,7 @@ fn compile_scope(compilation_state: &mut CompilationState, state: &mut ScopeStat
                                             pop rdx
                                             pop rsi
                                             pop rdi
-                                            pop rax\n", identifier);
+                                            pop rax\n", arguments_to_append, identifier);
                 compilation_state.assembly.push_str(&to_append);
             }
         }
@@ -178,5 +207,6 @@ fn compile_expression(compilation_state: &mut CompilationState, state: &mut Scop
             compilation_state.assembly.push_str("pop rbx\n idiv rbx\n");
             state.stack_size -= 1;
         },
+        Expression::StringLiteral(_) => todo!(),
     }
 }

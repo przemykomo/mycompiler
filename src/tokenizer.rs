@@ -1,6 +1,6 @@
 #[derive(Debug)]
 pub enum Token {
-    Exit,
+    //Exit,
     IntLiteral(i32),
     Semicolon,
     Let,
@@ -15,7 +15,10 @@ pub enum Token {
     Function,
     CurlyBracketOpen,
     CurlyBracketClose,
-    Public
+    Public,
+    String,
+    StringLiteral(String),
+    Extern
 }
 
 pub fn tokenize(contents: &str) -> Vec<Token> {
@@ -41,10 +44,12 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
 
             tokens.push(
                 match buffer.as_str() {
-                    "exit" => Token::Exit,
+                    //"exit" => Token::Exit,
                     "let" => Token::Let,
                     "fn" => Token::Function,
                     "public" => Token::Public,
+                    "string" => Token::String,
+                    "extern" => Token::Extern,
                     _ => Token::Identifier(buffer)
                 });
         } else if c.is_ascii_digit() || c == '-' {
@@ -66,6 +71,20 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
             } else if buffer == "-" {
                 tokens.push(Token::MinusSign);
             }
+        } else if c == '"' {
+            loop {
+                if let Some(c) = iter.next() {
+                    if c != '"' {
+                        buffer.push(c);
+                    } else {
+                        tokens.push(Token::StringLiteral(buffer));
+                        break;
+                    }
+                } else {
+                    panic!("Expected second quote for string literal end.");
+                }
+            }
+
         } else {
             tokens.push(
                     match c {

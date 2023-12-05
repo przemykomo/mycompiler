@@ -25,6 +25,12 @@ pub enum Statement {
 }
 
 #[derive(Debug)]
+pub enum PrimitiveType {
+    INT,
+    CHAR
+}
+
+#[derive(Debug)]
 pub struct Function {
     pub name: String,
     pub public: bool,

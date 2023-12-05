@@ -22,7 +22,7 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
 
     let mut extern_dec_iter = parsed_unit.extern_declarations.iter();
     while let Some(extern_delcaration) = extern_dec_iter.next() {
-        let mut to_append = formatdoc!("extern {}\n", extern_delcaration);
+        let to_append = formatdoc!("extern {}\n", extern_delcaration);
         compilation_state.assembly.push_str(&to_append);
     }
 

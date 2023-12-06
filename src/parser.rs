@@ -6,6 +6,7 @@ use itertools::Itertools;
 #[derive(Debug)]
 pub enum Expression {
     IntLiteral(i32),
+    CharacterLiteral(char),
     Identifier(String),
     Add { left: Box<Expression>, right: Box<Expression> },
     Multiply { left: Box<Expression>, right: Box<Expression> },
@@ -17,17 +18,11 @@ pub enum Expression {
 #[derive(Debug)]
 pub enum Statement {
     Exit(Expression),
-    VariableDefinition { identifier: String, expression: Expression },
+    VariableDefinition { identifier: String, expression: Expression, data_type: DataType },
     VariableAssigment { identifier: String, expression: Expression },
     Increment(String),
     Decrement(String),
     FunctionCall { identifier: String, arguments: Vec<String> }
-}
-
-#[derive(Debug)]
-pub enum PrimitiveType {
-    INT,
-    CHAR
 }
 
 #[derive(Debug)]
@@ -94,6 +89,24 @@ pub fn parse(tokens: &Vec<Token>) -> ParsedUnit {
     return parsed_unit;
 }
 
+fn variable_definition(iter: &mut Peekable<Iter<Token>>, abstract_syntax_tree: &mut Vec<Statement>, data_type: &DataType) {
+    if let Some(Token::Identifier(identifier)) = iter.next() {
+            let my_expression: Expression;
+            match iter.next() {
+                Some(Token::EqualSign) => {
+                    my_expression = parse_expression(iter);
+                },
+                Some(Token::Semicolon) => {
+                    my_expression = Expression::IntLiteral(0);
+                },
+                _ => {
+                    panic!("Syntax error.");
+                }
+        }
+        abstract_syntax_tree.push(Statement::VariableDefinition { identifier: identifier.clone(), expression: my_expression, data_type: data_type.clone() });
+    }
+}
+
 pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
     let mut abstract_syntax_tree = Vec::<Statement>::new();
 
@@ -104,22 +117,8 @@ pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
                 let my_expression: Expression = parse_expression(iter);
                 abstract_syntax_tree.push(Statement::Exit(my_expression));
             },*/
-            Token::Let => {
-                if let Some(Token::Identifier(identifier)) = iter.next() {
-                    let my_expression: Expression;
-                    match iter.next() {
-                        Some(Token::EqualSign) => {
-                            my_expression = parse_expression(iter);
-                        },
-                        Some(Token::Semicolon) => {
-                            my_expression = Expression::IntLiteral(0);
-                        },
-                        _ => {
-                            panic!("Syntax error.");
-                        }
-                    }
-                    abstract_syntax_tree.push(Statement::VariableDefinition { identifier: identifier.clone(), expression: my_expression });
-                }
+            Token::VariableDefinition(data_type) => {
+                variable_definition(iter, &mut abstract_syntax_tree, data_type);
             },
             Token::Identifier(identifier) => {
                 match iter.next() {
@@ -213,6 +212,7 @@ fn parse_atom(iter: &mut Peekable<Iter<Token>>) -> Expression {
     match iter.next() {
         Some(Token::IntLiteral(value)) => Expression::IntLiteral(*value),
         Some(Token::Identifier(other)) => Expression::Identifier(other.clone()),
+        Some(Token::CharacterLiteral(c)) => Expression::CharacterLiteral(c.clone()),
         Some(Token::ParenthesisOpen) => {
             let expression = parse_expression(iter);
             let Some(Token::ParenthesisClose) = iter.next() else {
@@ -222,7 +222,7 @@ fn parse_atom(iter: &mut Peekable<Iter<Token>>) -> Expression {
         },
         Some(Token::StringLiteral(value)) => Expression::StringLiteral(value.clone()),
         _ => {
-            panic!("NO!");
+            panic!("Cannot parse an atom expression!");
         }
     }
 }

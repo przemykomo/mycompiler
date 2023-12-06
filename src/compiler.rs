@@ -72,7 +72,7 @@ fn compile_scope(compilation_state: &mut CompilationState, state: &mut ScopeStat
                 compile_expression(compilation_state, state, &expression);
                 compilation_state.assembly.push_str("mov rdi, rax\n mov rax, 60\n syscall\n");
             },
-            Statement::VariableDefinition { identifier, expression } => {
+            Statement::VariableDefinition { identifier, expression, data_type } => {
                 if state.variables.contains_key(identifier) {
                     panic!("Variable \"{}\" already exists!", identifier);
                 }
@@ -165,6 +165,10 @@ fn compile_expression(compilation_state: &mut CompilationState, state: &mut Scop
     match expression {
         Expression::IntLiteral(value) => {
             let to_append = format!("mov rax, {}\n", value);
+            compilation_state.assembly.push_str(&to_append);
+        },
+        Expression::CharacterLiteral(c) => {
+            let to_append = format!("mov rax, '{}'\n", c);
             compilation_state.assembly.push_str(&to_append);
         },
         Expression::Identifier(other) => {

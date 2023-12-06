@@ -2,8 +2,9 @@
 pub enum Token {
     //Exit,
     IntLiteral(i32),
+    CharacterLiteral(char),
     Semicolon,
-    Let,
+    VariableDefinition(DataType),
     Identifier(String),
     EqualSign,
     PlusSign,
@@ -19,6 +20,12 @@ pub enum Token {
     String,
     StringLiteral(String),
     Extern
+}
+
+#[derive(Debug, Clone)]
+pub enum DataType {
+    Int,
+    Char
 }
 
 pub fn tokenize(contents: &str) -> Vec<Token> {
@@ -45,7 +52,8 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
             tokens.push(
                 match buffer.as_str() {
                     //"exit" => Token::Exit,
-                    "let" => Token::Let,
+                    "int" => Token::VariableDefinition(DataType::Int),
+                    "char" => Token::VariableDefinition(DataType::Char),
                     "fn" => Token::Function,
                     "public" => Token::Public,
                     "string" => Token::String,
@@ -85,6 +93,19 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
                 }
             }
 
+        } else if c == '\'' {
+            if let Some(c) = iter.next() {
+                if let Some('\'') = iter.next() {
+                    if !c.is_ascii() {
+                        panic!("Character {} isn't an ASCII character.", c);
+                    }
+                    tokens.push(Token::CharacterLiteral(c));
+                } else {
+                    panic!("Expected a ' at the end of a character literal.");
+                }
+            } else {
+                panic!("Expected a character after '");
+            }
         } else {
             tokens.push(
                     match c {

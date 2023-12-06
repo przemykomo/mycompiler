@@ -172,10 +172,7 @@ fn compile_expression(compilation_state: &mut CompilationState, state: &mut Scop
             compilation_state.assembly.push_str(&to_append);
         },
         Expression::Identifier(other) => {
-            if !state.variables.contains_key(other) {
-                panic!("Undeclared identifier: \"{}\"", other);
-            }
-            let stack_location = state.variables.get(other).unwrap();
+            let stack_location = state.variables.get(other).expect(&format!("Undeclared identifier: \"{}\"", other));
             let to_append = format!("mov rax, QWORD [rsp + {}]\n", (state.stack_size - stack_location - 1) * 8);
             compilation_state.assembly.push_str(&to_append);
         },
@@ -210,6 +207,15 @@ fn compile_expression(compilation_state: &mut CompilationState, state: &mut Scop
             compile_expression(compilation_state, state, left);
             compilation_state.assembly.push_str("pop rbx\n idiv rbx\n");
             state.stack_size -= 1;
+        },
+        Expression::Dereference(expression) => {
+            compile_expression(compilation_state, state, expression);
+            compilation_state.assembly.push_str("mov rax, QWORD [rax]\n");
+        },
+        Expression::Reference(variable) => {
+            let stack_location = state.variables.get(variable).expect(&format!("Undeclared identifier: \"{}\"", variable));
+            let to_append = format!("mov rax, rsp + {}\n", (state.stack_size - stack_location - 1) * 8);
+            compilation_state.assembly.push_str(&to_append);
         },
         Expression::StringLiteral(_) => todo!(),
     }

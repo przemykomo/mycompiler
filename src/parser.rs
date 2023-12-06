@@ -12,7 +12,9 @@ pub enum Expression {
     Multiply { left: Box<Expression>, right: Box<Expression> },
     Subtract { left: Box<Expression>, right: Box<Expression> },
     Divide { left: Box<Expression>, right: Box<Expression> },
-    StringLiteral(String)
+    StringLiteral(String),
+    Dereference(Box<Expression>),
+    Reference(String)
 }
 
 #[derive(Debug)]
@@ -213,6 +215,14 @@ fn parse_atom(iter: &mut Peekable<Iter<Token>>) -> Expression {
         Some(Token::IntLiteral(value)) => Expression::IntLiteral(*value),
         Some(Token::Identifier(other)) => Expression::Identifier(other.clone()),
         Some(Token::CharacterLiteral(c)) => Expression::CharacterLiteral(c.clone()),
+        Some(Token::MultiplySign) => Expression::Dereference(Box::new(parse_atom(iter))),
+        Some(Token::Ampersand) => {
+            if let Some(Token::Identifier(variable)) = iter.next() {
+                Expression::Reference(variable.clone())
+            } else {
+                panic!("Expected an identifier after a reference operator.");
+            }
+        },
         Some(Token::ParenthesisOpen) => {
             let expression = parse_expression(iter);
             let Some(Token::ParenthesisClose) = iter.next() else {

@@ -19,7 +19,8 @@ pub enum Token {
     Public,
     String,
     StringLiteral(String),
-    Extern
+    Extern,
+    Ampersand
 }
 
 #[derive(Debug, Clone)]
@@ -118,6 +119,7 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
                         ')' => Token::ParenthesisClose,
                         '{' => Token::CurlyBracketOpen,
                         '}' => Token::CurlyBracketClose,
+                        '&' => Token::Ampersand,
                         _ => continue
                 });
         }

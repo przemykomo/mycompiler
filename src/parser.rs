@@ -3,7 +3,7 @@ use std::iter::Peekable;
 use std::slice::Iter;
 use itertools::Itertools;
 
-#[derive(Debug)]
+#[derive(Debug)] //todo: maybe put DataType as a value inside all Expression types?
 pub enum Expression {
     IntLiteral(i32),
     CharacterLiteral(char),

@@ -2,10 +2,11 @@ extern internal;
 extern exit;
 
 public fn _start() {
-    char c = 'd';
-    int addr = &c;
-    char d = *addr;
-    internal(c, addr, d);
+    int a = 8;
+    char c = 'b';
+    char d = 'd';
+    internal(a, c, d);
     int i = 0;
+    i++;
     exit(i);
 }

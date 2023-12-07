@@ -26,7 +26,8 @@ pub enum Token {
 #[derive(Debug, Clone)]
 pub enum DataType {
     Int,
-    Char
+    Char,
+    Array{ data_type: Box<DataType>, size: i32 }
 }
 
 pub fn tokenize(contents: &str) -> Vec<Token> {

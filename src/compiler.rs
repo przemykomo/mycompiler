@@ -1,4 +1,5 @@
 use crate::parser::*;
+use crate::tokenizer::DataType;
 use std::collections::HashMap;
 use std::iter::Peekable;
 use std::slice::Iter;
@@ -6,13 +7,45 @@ use indoc::formatdoc;
 use indoc::indoc;
 
 struct CompilationState<> {
-    assembly : String,
+    assembly: String,
 }
 
 struct ScopeState<'a> {
     iter: Peekable<Iter<'a, Statement>>,
     stack_size: i32,
-    variables: HashMap<String, i32>
+    variables: HashMap<String, Variable>,
+    assembly: String
+}
+
+struct Variable {
+    stack_location: i32,
+    data_type: DataType
+}
+
+pub fn sizeof(data_type: &DataType) -> i32 {
+    match data_type {
+        DataType::Int => 8,
+        DataType::Char => 1,
+        DataType::Array { data_type: _, size: _ } => todo!()
+    }
+}
+
+pub fn sizeofword(data_type: &DataType) -> &str {
+    match data_type {
+        DataType::Int => "QWORD",
+        DataType::Char => "BYTE",
+        DataType::Array { data_type, size: _ } => sizeofword(data_type)
+    }
+}
+
+pub fn reg_from_size(size: i32) -> &'static str {
+    match size {
+        8 => "rax",
+        4 => "eax",
+        2 => "ax",
+        1 => "al",
+        _ => panic!("Wrong value!")
+    }
 }
 
 pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
@@ -48,9 +81,12 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
         let mut scope_state = ScopeState {
             iter: function.body.iter().peekable(),
             stack_size: 0,
-            variables : HashMap::<String, i32>::new() // Identifier -> stack location
+            variables: HashMap::<String, Variable>::new(), // Identifier -> stack location
+            assembly: String::new()
         };
-        compile_scope(&mut compilation_state, &mut scope_state);
+        compile_scope(&mut scope_state);
+        compilation_state.assembly.push_str(&format!("sub rsp, {}\n", ((scope_state.stack_size + 15) / 16) * 16)); // align the stack frame to 2 bytes
+        compilation_state.assembly.push_str(&scope_state.assembly);
         to_append = indoc!("mov rsp, rbp
                             pop rbp
                             pop r15
@@ -65,61 +101,45 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
     return compilation_state.assembly;
 }
 
-fn compile_scope(compilation_state: &mut CompilationState, state: &mut ScopeState) {
+fn compile_scope(state: &mut ScopeState) {
     while let Some(statement) = state.iter.next() {
         match statement {
             Statement::Exit(expression) => {
-                compile_expression(compilation_state, state, &expression);
-                compilation_state.assembly.push_str("mov rdi, rax\n mov rax, 60\n syscall\n");
+                compile_expression(state, &expression);
+                state.assembly.push_str("mov rdi, rax\n mov rax, 60\n syscall\n");
             },
             Statement::VariableDefinition { identifier, expression, data_type } => {
                 if state.variables.contains_key(identifier) {
                     panic!("Variable \"{}\" already exists!", identifier);
                 }
 
-                compile_expression(compilation_state, state, &expression);
-                state.variables.insert(identifier.clone(), state.stack_size);
-                compilation_state.assembly.push_str("push rax\n");
-                state.stack_size += 1;
+                compile_expression(state, &expression); //todo: use Option<Expression> to not initialize the variable
+                let size = sizeof(data_type);
+                state.stack_size = ((state.stack_size + size - 1) / size) * size + size;
+                state.assembly.push_str(&format!("mov {} [rbp - {}], {}\n", sizeofword(data_type), state.stack_size, reg_from_size(size)));
+                state.variables.insert(identifier.clone(), Variable { stack_location: state.stack_size, data_type: data_type.clone() });
             },
             Statement::VariableAssigment { identifier, expression } => {
-                if !state.variables.contains_key(identifier) {
-                    panic!("Undeclared identifier: \"{}\"", identifier);
-                }
-
-                compile_expression(compilation_state, state, &expression);
-                let stack_location = state.variables.get(identifier).unwrap();
-                let to_append = format!("mov QWORD [rsp + {}], rax\n", (state.stack_size - stack_location - 1) * 8);
-                compilation_state.assembly.push_str(&to_append);
+                compile_expression(state, &expression);
+                let variable = state.variables.get(identifier).expect(&format!("Undeclared identifier: \"{}\"", identifier));
+                let size = sizeof(&variable.data_type);
+                state.assembly.push_str(&format!("mov {} [rbp - {}], {}\n", sizeofword(&variable.data_type), variable.stack_location, reg_from_size(size)));
             },
             Statement::Increment(identifier) => {
-                if !state.variables.contains_key(identifier) {
-                    panic!("Undeclared identifier: \"{}\"", identifier);
-                }
-
-                let stack_location = state.variables.get(identifier).unwrap();
-                let offset = (state.stack_size - stack_location - 1) * 8;
-                let to_append = format!("mov rax, QWORD [rsp + {0}]\n inc rax\n mov QWORD [rsp + {0}], rax\n", offset);
-                compilation_state.assembly.push_str(&to_append);
+                let variable = state.variables.get(identifier).expect(&format!("Undeclared identifier: \"{}\"", identifier));
+                state.assembly.push_str(&format!("inc {} [rbp - {}]\n", sizeofword(&variable.data_type), variable.stack_location));
             },
             Statement::Decrement(identifier) => {
-                if !state.variables.contains_key(identifier) {
-                    panic!("Undeclared identifier: \"{}\"", identifier);
-                }
-
-                let stack_location = state.variables.get(identifier).unwrap();
-                let offset = (state.stack_size - stack_location - 1) * 8;
-                let to_append = format!("mov rax, QWORD [rsp + {0}]\n dec rax\n mov QWORD [rsp + {0}], rax\n", offset);
-                compilation_state.assembly.push_str(&to_append);
+                let variable = state.variables.get(identifier).expect(&format!("Undeclared identifier: \"{}\"", identifier));
+                state.assembly.push_str(&format!("dec {} [rbp - {}]\n", sizeofword(&variable.data_type), variable.stack_location));
             },
             Statement::FunctionCall { identifier, arguments } => {
                 let mut arguments_to_append : String = String::new();
                 for (i, argument) in arguments.iter().enumerate().rev()  {
-                    let stack_location = state.variables.get(argument).expect(&format!("Undeclared identifier: \"{}\"", argument));
-                    // + 9 for rax - r11 we push before this
-                    let offset = (state.stack_size - stack_location - 1 + 9) * 8;
+                    let variable = state.variables.get(argument).expect(&format!("Undeclared identifier: \"{}\"", argument));
                     if i > 5 {
-                        let to_append = format!("mov rax, QWORD [rsp + {}]\npush rax", offset);
+                        let to_append = format!("{} rax, {} [rbp - {}]\n", if sizeof(&variable.data_type) == 8 {"mov"} else {"movzx"}, sizeofword(&variable.data_type), variable.stack_location);
+
                         arguments_to_append.push_str(&to_append);
                     } else {
                         let register = match i {
@@ -131,7 +151,7 @@ fn compile_scope(compilation_state: &mut CompilationState, state: &mut ScopeStat
                             5 => "r9",
                             _ => unreachable!()
                         };
-                        let to_append = format!("mov {}, QWORD [rsp + {}]\n", register, offset);
+                        let to_append = format!("{} {}, {} [rbp - {}]\n", if sizeof(&variable.data_type) == 8 {"mov"} else {"movzx"}, register, sizeofword(&variable.data_type), variable.stack_location);
                         arguments_to_append.push_str(&to_append);
                     }
                 }
@@ -155,67 +175,67 @@ fn compile_scope(compilation_state: &mut CompilationState, state: &mut ScopeStat
                                             pop rsi
                                             pop rdi
                                             pop rax\n", arguments_to_append, identifier);
-                compilation_state.assembly.push_str(&to_append);
+                state.assembly.push_str(&to_append);
             }
         }
     }
 }
 
-fn compile_expression(compilation_state: &mut CompilationState, state: &mut ScopeState, expression: &Expression) {
+fn compile_expression(state: &mut ScopeState, expression: &Expression) {
     match expression {
         Expression::IntLiteral(value) => {
             let to_append = format!("mov rax, {}\n", value);
-            compilation_state.assembly.push_str(&to_append);
+            state.assembly.push_str(&to_append);
         },
         Expression::CharacterLiteral(c) => {
             let to_append = format!("mov rax, '{}'\n", c);
-            compilation_state.assembly.push_str(&to_append);
+            state.assembly.push_str(&to_append);
         },
-        Expression::Identifier(other) => {
-            let stack_location = state.variables.get(other).expect(&format!("Undeclared identifier: \"{}\"", other));
-            let to_append = format!("mov rax, QWORD [rsp + {}]\n", (state.stack_size - stack_location - 1) * 8);
-            compilation_state.assembly.push_str(&to_append);
+        Expression::Identifier(identifier) => {
+            let variable = state.variables.get(identifier).expect(&format!("Undeclared identifier: \"{}\"", identifier));
+            let size = sizeof(&variable.data_type);
+            state.assembly.push_str(&format!("{} {}, {} [rbp - {}]\n", if size == 8 {"mov"} else {"movzx"}, reg_from_size(size), sizeofword(&variable.data_type), variable.stack_location));
         },
         Expression::Add { left, right } => {
-            compile_expression(compilation_state, state, right);
-            compilation_state.assembly.push_str("push rax\n");
-            state.stack_size += 1;
-            compile_expression(compilation_state, state, left);
-            compilation_state.assembly.push_str("pop rbx\n add rax, rbx\n");
-            state.stack_size -= 1;
+            compile_expression(state, right);
+            state.assembly.push_str("push rax\n");
+            state.stack_size += 8;
+            compile_expression(state, left);
+            state.assembly.push_str("pop rbx\n add rax, rbx\n");
+            state.stack_size -= 8;
         },
         Expression::Multiply { left, right } => {
-            compile_expression(compilation_state, state, right);
-            compilation_state.assembly.push_str("push rax\n");
-            state.stack_size += 1;
-            compile_expression(compilation_state, state, left);
-            compilation_state.assembly.push_str("pop rbx\n imul rbx\n");
-            state.stack_size -= 1;
+            compile_expression(state, right);
+            state.assembly.push_str("push rax\n");
+            state.stack_size += 8;
+            compile_expression(state, left);
+            state.assembly.push_str("pop rbx\n imul rbx\n");
+            state.stack_size -= 8;
         },
         Expression::Subtract{ left, right } => {
-            compile_expression(compilation_state, state, right);
-            compilation_state.assembly.push_str("push rax\n");
-            state.stack_size += 1;
-            compile_expression(compilation_state, state, left);
-            compilation_state.assembly.push_str("pop rbx\n sub rax, rbx\n");
-            state.stack_size -= 1;
+            compile_expression(state, right);
+            state.assembly.push_str("push rax\n");
+            state.stack_size += 8;
+            compile_expression(state, left);
+            state.assembly.push_str("pop rbx\n sub rax, rbx\n");
+            state.stack_size -= 8;
         },
         Expression::Divide{ left, right } => {
-            compile_expression(compilation_state, state, right);
-            compilation_state.assembly.push_str("push rax\n");
-            state.stack_size += 1;
-            compile_expression(compilation_state, state, left);
-            compilation_state.assembly.push_str("pop rbx\n idiv rbx\n");
-            state.stack_size -= 1;
+            compile_expression(state, right);
+            state.assembly.push_str("push rax\n");
+            state.stack_size += 8;
+            compile_expression(state, left);
+            state.assembly.push_str("pop rbx\n idiv rbx\n");
+            state.stack_size -= 8;
         },
         Expression::Dereference(expression) => {
-            compile_expression(compilation_state, state, expression);
-            compilation_state.assembly.push_str("mov rax, QWORD [rax]\n");
+            compile_expression(state, expression);
+            state.assembly.push_str("mov rax, QWORD [rax]\n");
         },
         Expression::Reference(variable) => {
-            let stack_location = state.variables.get(variable).expect(&format!("Undeclared identifier: \"{}\"", variable));
-            let to_append = format!("mov rax, rsp + {}\n", (state.stack_size - stack_location - 1) * 8);
-            compilation_state.assembly.push_str(&to_append);
+            let variable = state.variables.get(variable).expect(&format!("Undeclared identifier: \"{}\"", variable));
+            let to_append = format!("mov rax, rbp - {}\n", variable.stack_location);
+            state.assembly.push_str(&to_append);
         },
         Expression::StringLiteral(_) => todo!(),
     }

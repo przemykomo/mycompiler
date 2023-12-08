@@ -8,6 +8,7 @@ use indoc::indoc;
 
 struct CompilationState<> {
     assembly: String,
+    string_constants: HashMap<String, usize>
 }
 
 struct ScopeState<'a> {
@@ -22,19 +23,24 @@ struct Variable {
     data_type: DataType
 }
 
+#[must_use]
+struct ExpressionResult {
+    data_type: DataType
+}
+
 pub fn sizeof(data_type: &DataType) -> i32 {
     match data_type {
-        DataType::Int => 8,
+        DataType::Int | DataType::Pointer { .. } => 8,
         DataType::Char => 1,
-        DataType::Array { data_type: _, size: _ } => todo!()
+        DataType::Array { data_type: _, size: _ } => todo!(),
     }
 }
 
 pub fn sizeofword(data_type: &DataType) -> &str {
     match data_type {
-        DataType::Int => "QWORD",
+        DataType::Int | DataType::Pointer { .. } => "QWORD",
         DataType::Char => "BYTE",
-        DataType::Array { data_type, size: _ } => sizeofword(data_type)
+        DataType::Array { data_type, size: _ } => sizeofword(data_type),
     }
 }
 
@@ -50,7 +56,8 @@ pub fn reg_from_size(size: i32) -> &'static str {
 
 pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
     let mut compilation_state = CompilationState {
-        assembly: String::new()
+        assembly: String::new(),
+        string_constants: HashMap::new()
     };
 
     let mut extern_dec_iter = parsed_unit.extern_declarations.iter();
@@ -84,7 +91,7 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
             variables: HashMap::<String, Variable>::new(), // Identifier -> stack location
             assembly: String::new()
         };
-        compile_scope(&mut scope_state);
+        compile_scope(&mut scope_state, &mut compilation_state);
         compilation_state.assembly.push_str(&format!("sub rsp, {}\n", ((scope_state.stack_size + 15) / 16) * 16)); // align the stack frame to 2 bytes
         compilation_state.assembly.push_str(&scope_state.assembly);
         to_append = indoc!("mov rsp, rbp
@@ -98,16 +105,16 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
         compilation_state.assembly.push_str(&to_append);
     }
 
+    for (text, id) in compilation_state.string_constants {
+        compilation_state.assembly.insert_str(0, &format!(".String{}: db '{}', 0\n", id, text));
+    }
+
     return compilation_state.assembly;
 }
 
-fn compile_scope(state: &mut ScopeState) {
+fn compile_scope(state: &mut ScopeState, compilation_state: &mut CompilationState) {
     while let Some(statement) = state.iter.next() {
         match statement {
-            Statement::Exit(expression) => {
-                compile_expression(state, &expression);
-                state.assembly.push_str("mov rdi, rax\n mov rax, 60\n syscall\n");
-            },
             Statement::VariableDefinition { identifier, expression: expression_opt, data_type } => {
                 if state.variables.contains_key(identifier) {
                     panic!("Variable \"{}\" already exists!", identifier);
@@ -122,28 +129,38 @@ fn compile_scope(state: &mut ScopeState) {
                 state.stack_size = ((state.stack_size + size - 1) / size) * size + size;
 
                 if let Some(expression) = expression_opt {
-                    compile_expression(state, &expression);
+                    let result = compile_expression(state, compilation_state, &expression);
+                    if result.data_type != *data_type {
+                        panic!("Variable doesn't have the same type as the expression!");
+                    }
                     state.assembly.push_str(&format!("mov {} [rbp - {}], {}\n", sizeofword(data_type), state.stack_size, reg_from_size(size)));
                 }
                 state.variables.insert(identifier.clone(), Variable { stack_location: state.stack_size, data_type: data_type.clone() });
             },
             Statement::VariableAssigment { identifier, expression } => {
-                compile_expression(state, &expression);
+                let result = compile_expression(state, compilation_state, &expression);
                 let variable = state.variables.get(identifier).expect(&format!("Undeclared identifier: \"{}\"", identifier));
+                if result.data_type != variable.data_type {
+                    panic!("Variable doesn't have the same type as the expression!");
+                }
                 let size = sizeof(&variable.data_type);
                 state.assembly.push_str(&format!("mov {} [rbp - {}], {}\n", sizeofword(&variable.data_type), variable.stack_location, reg_from_size(size)));
             },
             Statement::ArrayElementAssigment { identifier, element, expression } => {
-                compile_expression(state, &element);
+                let element_result = compile_expression(state, compilation_state, &element);
+                if element_result.data_type != DataType::Int {
+                    panic!("Array index must be an integer!");
+                }
                 let variable = state.variables.get(identifier).expect(&format!("Undeclared identifier: \"{}\"", identifier));
                 if let DataType::Array { data_type, size: _size } = variable.data_type.clone() {
                     let size = sizeof(&data_type);
                     let stack_location = variable.stack_location.clone();
                     state.assembly.push_str("push rax\n");
-                    state.stack_size += 8;
-                    compile_expression(state, expression);
+                    let result = compile_expression(state, compilation_state, expression);
+                    if result.data_type != *data_type {
+                        panic!("Element in the array doesn't have the same type as the expresssion!");
+                    }
                     state.assembly.push_str(&format!("pop rbx\nmov {} [rbp - {} + rbx * {}], {}\n", sizeofword(&data_type), stack_location, size, reg_from_size(size)));
-                    state.stack_size -= 8;
                 } else {
                     panic!("{} isn't an array!", identifier);
                 }
@@ -213,73 +230,84 @@ fn compile_scope(state: &mut ScopeState) {
     }
 }
 
-fn compile_expression(state: &mut ScopeState, expression: &Expression) {
+fn compile_expression(state: &mut ScopeState, compilation_state: &mut CompilationState, expression: &Expression) -> ExpressionResult {
     match expression {
         Expression::IntLiteral(value) => {
             let to_append = format!("mov rax, {}\n", value);
             state.assembly.push_str(&to_append);
+            ExpressionResult { data_type: DataType::Int }
         },
         Expression::CharacterLiteral(c) => {
             let to_append = format!("mov rax, '{}'\n", c);
             state.assembly.push_str(&to_append);
+            ExpressionResult { data_type: DataType::Char }
         },
         Expression::Identifier(identifier) => {
             let variable = state.variables.get(identifier).expect(&format!("Undeclared identifier: \"{}\"", identifier));
             let size = sizeof(&variable.data_type);
             state.assembly.push_str(&format!("{} {}, {} [rbp - {}]\n", if size == 8 {"mov"} else {"movzx"}, reg_from_size(size), sizeofword(&variable.data_type), variable.stack_location));
+            ExpressionResult { data_type: variable.data_type.clone() }
         },
         Expression::AccessArrayElement { identifier, element } => {
             let variable = state.variables.get(identifier).expect(&format!("Undeclared identifier: \"{}\"", identifier));
             if let DataType::Array { data_type, size: _ } = variable.data_type.clone() {
                 let stack_location = variable.stack_location.clone();
-                compile_expression(state, element);
+                let result = compile_expression(state, compilation_state, element);
+                if result.data_type != DataType::Int {
+                    panic!("Array index must be an integer!");
+                }
                 let size = sizeof(&data_type);
                 state.assembly.push_str(&format!("{} {}, {} [rbp - {} + rda]\n", if size == 8 {"mov"} else {"movzx"}, reg_from_size(size), sizeofword(&data_type), stack_location));
+                ExpressionResult { data_type: *data_type }
             } else {
                 panic!("{} is not an array type!", identifier);
             }
         },
-        Expression::Add { left, right } => {
-            compile_expression(state, right);
+        Expression::BinaryExpression { left, right, operator } => {
+            let right_result = compile_expression(state, compilation_state, right);
             state.assembly.push_str("push rax\n");
-            state.stack_size += 8;
-            compile_expression(state, left);
-            state.assembly.push_str("pop rbx\n add rax, rbx\n");
-            state.stack_size -= 8;
-        },
-        Expression::Multiply { left, right } => {
-            compile_expression(state, right);
-            state.assembly.push_str("push rax\n");
-            state.stack_size += 8;
-            compile_expression(state, left);
-            state.assembly.push_str("pop rbx\n imul rbx\n");
-            state.stack_size -= 8;
-        },
-        Expression::Subtract{ left, right } => {
-            compile_expression(state, right);
-            state.assembly.push_str("push rax\n");
-            state.stack_size += 8;
-            compile_expression(state, left);
-            state.assembly.push_str("pop rbx\n sub rax, rbx\n");
-            state.stack_size -= 8;
-        },
-        Expression::Divide{ left, right } => {
-            compile_expression(state, right);
-            state.assembly.push_str("push rax\n");
-            state.stack_size += 8;
-            compile_expression(state, left);
-            state.assembly.push_str("pop rbx\n idiv rbx\n");
-            state.stack_size -= 8;
+            let left_result = compile_expression(state, compilation_state, left);
+            match operator {
+                BinaryOperator::Add => state.assembly.push_str("pop rbx\n add rax, rbx\n"),
+                BinaryOperator::Subtract => state.assembly.push_str("pop rbx\n sub rax, rbx\n"),
+                BinaryOperator::Multiply => state.assembly.push_str("pop rbx\n imul rbx\n"),
+                BinaryOperator::Divide => state.assembly.push_str("pop rbx\n idiv rbx\n")
+            }
+            
+            if let DataType::Int = right_result.data_type  {
+                if let DataType::Int = left_result.data_type {
+                    ExpressionResult { data_type: DataType::Int }
+                } else {
+                    panic!("Cannot add non integers!");
+                }
+            } else {
+                panic!("Cannot add non integers!");
+            }
         },
         Expression::Dereference(expression) => {
-            compile_expression(state, expression);
-            state.assembly.push_str("mov rax, QWORD [rax]\n");
+            let result = compile_expression(state, compilation_state, expression);
+            if let DataType::Pointer { data_type } = result.data_type {
+                state.assembly.push_str("mov rax, QWORD [rax]\n");
+                ExpressionResult { data_type: *data_type }
+            } else {
+                panic!("Cannot dereference a non pointer!");
+            }
         },
         Expression::Reference(variable) => {
             let variable = state.variables.get(variable).expect(&format!("Undeclared identifier: \"{}\"", variable));
-            let to_append = format!("mov rax, rbp - {}\n", variable.stack_location);
-            state.assembly.push_str(&to_append);
+            state.assembly.push_str(&format!("mov rax, rbp - {}\n", variable.stack_location));
+            ExpressionResult { data_type: DataType::Pointer { data_type: Box::new(variable.data_type.clone()) } }
         },
-        Expression::StringLiteral(_) => todo!(),
+        Expression::StringLiteral(text) => {
+            let id : usize;
+            if compilation_state.string_constants.contains_key(text) {
+                id = *compilation_state.string_constants.get(text).expect("Missing string in the string_contants hash map. Should never happen.");
+            } else {
+                id = compilation_state.string_constants.len();
+                compilation_state.string_constants.insert(text.clone(), id);
+            }
+            state.assembly.push_str(&format!("lea rax, [.String{}]\n", id));
+            ExpressionResult { data_type: DataType::Pointer { data_type: Box::new(DataType::Char) }}
+        }
     }
 }

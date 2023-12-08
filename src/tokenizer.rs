@@ -25,11 +25,12 @@ pub enum Token {
     SquareParenthesisClose
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum DataType {
     Int,
     Char,
-    Array{ data_type: Box<DataType>, size: i32 }
+    Array{ data_type: Box<DataType>, size: i32 },
+    Pointer{ data_type: Box<DataType> }
 }
 
 pub fn tokenize(contents: &str) -> Vec<Token> {

@@ -8,10 +8,7 @@ pub enum Expression {
     IntLiteral(i32),
     CharacterLiteral(char),
     Identifier(String),
-    Add { left: Box<Expression>, right: Box<Expression> },
-    Multiply { left: Box<Expression>, right: Box<Expression> },
-    Subtract { left: Box<Expression>, right: Box<Expression> },
-    Divide { left: Box<Expression>, right: Box<Expression> },
+    BinaryExpression { left: Box<Expression>, right: Box<Expression>, operator: BinaryOperator },
     StringLiteral(String),
     Dereference(Box<Expression>),
     Reference(String),
@@ -19,8 +16,15 @@ pub enum Expression {
 }
 
 #[derive(Debug)]
+pub enum BinaryOperator {
+    Add,
+    Subtract,
+    Multiply,
+    Divide
+}
+
+#[derive(Debug)]
 pub enum Statement {
-    Exit(Expression),
     VariableDefinition { identifier: String, expression: Option<Expression>, data_type: DataType },
     VariableAssigment { identifier: String, expression: Expression },
     ArrayElementAssigment { identifier: String, element: Expression, expression: Expression },
@@ -130,15 +134,22 @@ pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
                 abstract_syntax_tree.push(Statement::Exit(my_expression));
             },*/
             Token::VariableDefinition(data_type) => {
-                if let Some(Token::SquareParenthesisOpen) = iter.peek() {
-                    iter.next();
-                    if let Some((Token::IntLiteral(size), Token::SquareParenthesisClose)) = iter.next_tuple() {
-                        variable_definition(iter, &mut abstract_syntax_tree, &DataType::Array { data_type: Box::new(data_type.clone()), size: *size });
-                    } else {
-                        panic!("Expected an int literal in an array definition!");
+                match iter.peek() {
+                    Some(Token::SquareParenthesisOpen) => {
+                        iter.next();
+                        if let Some((Token::IntLiteral(size), Token::SquareParenthesisClose)) = iter.next_tuple() {
+                            variable_definition(iter, &mut abstract_syntax_tree, &DataType::Array { data_type: Box::new(data_type.clone()), size: *size });
+                        } else {
+                            panic!("Expected an int literal in an array definition!");
+                        }
+                    },
+                    Some(Token::MultiplySign) => {
+                        iter.next();
+                        variable_definition(iter, &mut abstract_syntax_tree, &DataType::Pointer { data_type: Box::new(data_type.clone()) });
+                    },
+                    _ => {
+                        variable_definition(iter, &mut abstract_syntax_tree, data_type);
                     }
-                } else {
-                    variable_definition(iter, &mut abstract_syntax_tree, data_type);
                 }
             },
             Token::Identifier(identifier) => {
@@ -204,11 +215,11 @@ fn parse_addition(iter: &mut Peekable<Iter<Token>>) -> Expression {
         if let Token::PlusSign = token {
             iter.next();
             let primitive = parse_multiplication(iter);
-            left = Expression::Add { left: Box::new(left), right: Box::new(primitive) };
+            left = Expression::BinaryExpression { left: Box::new(left), right: Box::new(primitive), operator: BinaryOperator::Add };
         } else if let Token::MinusSign = token {
             iter.next();
             let primitive = parse_multiplication(iter);
-            left = Expression::Subtract{ left: Box::new(left), right: Box::new(primitive) };
+            left = Expression::BinaryExpression { left: Box::new(left), right: Box::new(primitive), operator: BinaryOperator::Subtract };
         } else {
             return left;
         }
@@ -224,11 +235,11 @@ fn parse_multiplication(iter: &mut Peekable<Iter<Token>>) -> Expression {
         if let Token::MultiplySign = token {
             iter.next();
             let primitive = parse_atom(iter);
-            left = Expression::Multiply { left: Box::new(left), right: Box::new(primitive) };
+            left = Expression::BinaryExpression { left: Box::new(left), right: Box::new(primitive), operator: BinaryOperator::Multiply };
         } else if let Token::DivisionSign = token {
             iter.next();
             let primitive = parse_atom(iter);
-            left = Expression::Divide { left: Box::new(left), right: Box::new(primitive) };
+            left = Expression::BinaryExpression { left: Box::new(left), right: Box::new(primitive), operator: BinaryOperator::Divide };
         } else {
             return left;
         }

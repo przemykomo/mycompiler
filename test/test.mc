@@ -2,12 +2,11 @@ extern internal;
 extern exit;
 
 public fn _start() {
-    int[5] a;
-    a[0] = 0;
-    a[1] = 1;
-    a[2] = 24;
-    a[3] = 55;
-    a[4] = 120;
+    char* a = "testowy string lets go";
+    char b = *a;
+    int c = 2 + 4;
+    int d = c + 8;
+    int g = d / c - 3;
     internal(a);
     int i = 0;
     exit(i);

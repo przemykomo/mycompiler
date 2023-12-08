@@ -20,7 +20,9 @@ pub enum Token {
     String,
     StringLiteral(String),
     Extern,
-    Ampersand
+    Ampersand,
+    SquareParenthesisOpen,
+    SquareParenthesisClose
 }
 
 #[derive(Debug, Clone)]
@@ -121,6 +123,8 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
                         '{' => Token::CurlyBracketOpen,
                         '}' => Token::CurlyBracketClose,
                         '&' => Token::Ampersand,
+                        '[' => Token::SquareParenthesisOpen,
+                        ']' => Token::SquareParenthesisClose,
                         _ => continue
                 });
         }

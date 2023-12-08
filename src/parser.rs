@@ -14,14 +14,16 @@ pub enum Expression {
     Divide { left: Box<Expression>, right: Box<Expression> },
     StringLiteral(String),
     Dereference(Box<Expression>),
-    Reference(String)
+    Reference(String),
+    AccessArrayElement { identifier: String, element: Box<Expression> }
 }
 
 #[derive(Debug)]
 pub enum Statement {
     Exit(Expression),
-    VariableDefinition { identifier: String, expression: Expression, data_type: DataType },
+    VariableDefinition { identifier: String, expression: Option<Expression>, data_type: DataType },
     VariableAssigment { identifier: String, expression: Expression },
+    ArrayElementAssigment { identifier: String, element: Expression, expression: Expression },
     Increment(String),
     Decrement(String),
     FunctionCall { identifier: String, arguments: Vec<String> }
@@ -48,6 +50,7 @@ pub fn parse(tokens: &Vec<Token>) -> ParsedUnit {
     let mut iter = tokens.iter().peekable();
 
     while let Some(token) = iter.next() {
+        dbg!(token);
         match token {
             Token::Extern => {
                 if let Some((Token::Identifier(identifier), Token::Semicolon)) = iter.next_tuple() {
@@ -92,20 +95,26 @@ pub fn parse(tokens: &Vec<Token>) -> ParsedUnit {
 }
 
 fn variable_definition(iter: &mut Peekable<Iter<Token>>, abstract_syntax_tree: &mut Vec<Statement>, data_type: &DataType) {
-    if let Some(Token::Identifier(identifier)) = iter.next() {
-            let my_expression: Expression;
-            match iter.next() {
-                Some(Token::EqualSign) => {
-                    my_expression = parse_expression(iter);
-                },
-                Some(Token::Semicolon) => {
-                    my_expression = Expression::IntLiteral(0);
-                },
-                _ => {
-                    panic!("Syntax error.");
-                }
+    match iter.next() {
+        Some(Token::Identifier(identifier)) => {
+                let my_expression: Option<Expression>;
+                match iter.next() {
+                    Some(Token::EqualSign) => {
+                        my_expression = Some(parse_expression(iter));
+                    },
+                    Some(Token::Semicolon) => {
+                        my_expression = None;
+                    },
+                    _ => {
+                        panic!("Syntax error.");
+                    }
+            }
+            abstract_syntax_tree.push(Statement::VariableDefinition { identifier: identifier.clone(), expression: my_expression, data_type: data_type.clone() });
+        },
+        token => {
+            dbg!(token);
+            panic!("Unexpected token!");
         }
-        abstract_syntax_tree.push(Statement::VariableDefinition { identifier: identifier.clone(), expression: my_expression, data_type: data_type.clone() });
     }
 }
 
@@ -113,6 +122,7 @@ pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
     let mut abstract_syntax_tree = Vec::<Statement>::new();
 
     while let Some(token) = iter.next() {
+        dbg!(token);
         match token {
             /*
             Token::Exit => {
@@ -120,7 +130,16 @@ pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
                 abstract_syntax_tree.push(Statement::Exit(my_expression));
             },*/
             Token::VariableDefinition(data_type) => {
-                variable_definition(iter, &mut abstract_syntax_tree, data_type);
+                if let Some(Token::SquareParenthesisOpen) = iter.peek() {
+                    iter.next();
+                    if let Some((Token::IntLiteral(size), Token::SquareParenthesisClose)) = iter.next_tuple() {
+                        variable_definition(iter, &mut abstract_syntax_tree, &DataType::Array { data_type: Box::new(data_type.clone()), size: *size });
+                    } else {
+                        panic!("Expected an int literal in an array definition!");
+                    }
+                } else {
+                    variable_definition(iter, &mut abstract_syntax_tree, data_type);
+                }
             },
             Token::Identifier(identifier) => {
                 match iter.next() {
@@ -150,8 +169,16 @@ pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
                         if let Some(Token::ParenthesisClose) = iter.next() {
                             abstract_syntax_tree.push(Statement::FunctionCall { identifier: identifier.clone(), arguments });
                         }
-                    }
-                    _ => {
+                    },
+                    Some(Token::SquareParenthesisOpen) => {
+                        let element = parse_expression(iter);
+                        if let Some((Token::SquareParenthesisClose, Token::EqualSign)) = iter.next_tuple() {
+                            let expression = parse_expression(iter);
+                            abstract_syntax_tree.push(Statement::ArrayElementAssigment { identifier: identifier.clone(), element, expression });
+                        }
+                    },
+                    other => {
+                        dbg!(other);
                         panic!("Syntax error.");
                     }
                 }
@@ -213,7 +240,18 @@ fn parse_multiplication(iter: &mut Peekable<Iter<Token>>) -> Expression {
 fn parse_atom(iter: &mut Peekable<Iter<Token>>) -> Expression {
     match iter.next() {
         Some(Token::IntLiteral(value)) => Expression::IntLiteral(*value),
-        Some(Token::Identifier(other)) => Expression::Identifier(other.clone()),
+        Some(Token::Identifier(other)) => {
+            if let Some(Token::SquareParenthesisOpen) = iter.peek() {
+                iter.next();
+                let expression = parse_expression(iter);
+                let Some(Token::SquareParenthesisClose) = iter.next() else {
+                    panic!("Expected closed square parenthesis.");
+                };
+                Expression::AccessArrayElement { identifier: other.clone(), element: Box::new(expression) }                    
+            } else {
+                Expression::Identifier(other.clone())
+            }
+        },
         Some(Token::CharacterLiteral(c)) => Expression::CharacterLiteral(c.clone()),
         Some(Token::MultiplySign) => Expression::Dereference(Box::new(parse_atom(iter))),
         Some(Token::Ampersand) => {

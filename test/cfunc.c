@@ -1,4 +1,4 @@
 #include <stdio.h>
-void internal(char a[]) {
-    printf("Internal function: %s hello\n", a);
+void internal(char a) {
+    printf("Internal function: %c hello\n", a);
 }

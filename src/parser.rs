@@ -3,12 +3,13 @@ use std::iter::Peekable;
 use std::slice::Iter;
 use itertools::Itertools;
 
-#[derive(Debug)] //todo: maybe put DataType as a value inside all Expression types?
+#[derive(Debug)]
 pub enum Expression {
     IntLiteral(i32),
     CharacterLiteral(char),
     Identifier(String),
-    BinaryExpression { left: Box<Expression>, right: Box<Expression>, operator: BinaryOperator },
+    ArithmeticExpression { left: Box<Expression>, right: Box<Expression>, operator: ArithmeticOperator },
+    ComparisonExpression { left: Box<Expression>, right: Box<Expression>, operator: ComparisonOperator },
     StringLiteral(String),
     Dereference(Box<Expression>),
     Reference(String),
@@ -16,11 +17,18 @@ pub enum Expression {
 }
 
 #[derive(Debug)]
-pub enum BinaryOperator {
+pub enum ArithmeticOperator {
     Add,
     Subtract,
     Multiply,
     Divide
+}
+
+#[derive(Debug)]
+pub enum ComparisonOperator {
+    CompareEqual,
+    CompareLarger,
+    CompareSmaller
 }
 
 #[derive(Debug)]
@@ -30,7 +38,8 @@ pub enum Statement {
     ArrayElementAssigment { identifier: String, element: Expression, expression: Expression },
     Increment(String),
     Decrement(String),
-    FunctionCall { identifier: String, arguments: Vec<String> }
+    FunctionCall { identifier: String, arguments: Vec<String> },
+    If { expression: Expression, scope: Vec::<Statement> }
 }
 
 #[derive(Debug)]
@@ -128,11 +137,6 @@ pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
     while let Some(token) = iter.next() {
         dbg!(token);
         match token {
-            /*
-            Token::Exit => {
-                let my_expression: Expression = parse_expression(iter);
-                abstract_syntax_tree.push(Statement::Exit(my_expression));
-            },*/
             Token::VariableDefinition(data_type) => {
                 match iter.peek() {
                     Some(Token::SquareParenthesisOpen) => {
@@ -194,6 +198,19 @@ pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
                     }
                 }
             },
+            Token::If => {
+                if let Some(Token::ParenthesisOpen) = iter.next() {
+                    let expression = parse_expression(iter);
+                    if let Some((Token::ParenthesisClose, Token::CurlyBracketOpen)) = iter.next_tuple() {
+                        let scope = parse_scope(iter);
+                        abstract_syntax_tree.push(Statement::If { expression, scope });
+                    } else {
+                        panic!("Expected closed parenthesis and opened curly brackets in the if statement!");
+                    }
+                } else {
+                    panic!("Expected parenthesis after an if token!");
+                }
+            },
             Token::CurlyBracketClose => {
                 return abstract_syntax_tree;
             }
@@ -205,7 +222,38 @@ pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
 }
 
 fn parse_expression(iter: &mut Peekable<Iter<Token>>) -> Expression {
-    return parse_addition(iter);
+    return parse_relational(iter);
+}
+
+fn parse_relational(iter: &mut Peekable<Iter<Token>>) -> Expression {
+    let mut left = parse_addition(iter);
+
+    match iter.peek() {
+        Some(Token::EqualSign) => {
+            iter.next();
+            if let Some(Token::EqualSign) = iter.next() {
+                let right = parse_addition(iter);
+                left = Expression::ComparisonExpression { left: Box::new(left), right: Box::new(right), operator: ComparisonOperator::CompareEqual };
+            } else {
+                panic!("Cannot assign values in expressions!");
+            }
+        },
+        Some(Token::LargerThan) => {
+            iter.next();
+            let right = parse_addition(iter);
+            left = Expression::ComparisonExpression { left: Box::new(left), right: Box::new(right), operator: ComparisonOperator::CompareLarger };
+        },
+        Some(Token::SmallerThan) => {
+            iter.next();
+            let right = parse_addition(iter);
+            left = Expression::ComparisonExpression { left: Box::new(left), right: Box::new(right), operator: ComparisonOperator::CompareSmaller };
+        },        
+        _ => {
+            return left;
+        }
+    }
+
+    return left;
 }
 
 fn parse_addition(iter: &mut Peekable<Iter<Token>>) -> Expression {
@@ -215,11 +263,11 @@ fn parse_addition(iter: &mut Peekable<Iter<Token>>) -> Expression {
         if let Token::PlusSign = token {
             iter.next();
             let primitive = parse_multiplication(iter);
-            left = Expression::BinaryExpression { left: Box::new(left), right: Box::new(primitive), operator: BinaryOperator::Add };
+            left = Expression::ArithmeticExpression { left: Box::new(left), right: Box::new(primitive), operator: ArithmeticOperator::Add };
         } else if let Token::MinusSign = token {
             iter.next();
             let primitive = parse_multiplication(iter);
-            left = Expression::BinaryExpression { left: Box::new(left), right: Box::new(primitive), operator: BinaryOperator::Subtract };
+            left = Expression::ArithmeticExpression { left: Box::new(left), right: Box::new(primitive), operator: ArithmeticOperator::Subtract };
         } else {
             return left;
         }
@@ -235,11 +283,11 @@ fn parse_multiplication(iter: &mut Peekable<Iter<Token>>) -> Expression {
         if let Token::MultiplySign = token {
             iter.next();
             let primitive = parse_atom(iter);
-            left = Expression::BinaryExpression { left: Box::new(left), right: Box::new(primitive), operator: BinaryOperator::Multiply };
+            left = Expression::ArithmeticExpression { left: Box::new(left), right: Box::new(primitive), operator: ArithmeticOperator::Multiply };
         } else if let Token::DivisionSign = token {
             iter.next();
             let primitive = parse_atom(iter);
-            left = Expression::BinaryExpression { left: Box::new(left), right: Box::new(primitive), operator: BinaryOperator::Divide };
+            left = Expression::ArithmeticExpression { left: Box::new(left), right: Box::new(primitive), operator: ArithmeticOperator::Divide };
         } else {
             return left;
         }

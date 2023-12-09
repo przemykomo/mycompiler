@@ -1,6 +1,5 @@
 #[derive(Debug)]
 pub enum Token {
-    //Exit,
     IntLiteral(i32),
     CharacterLiteral(char),
     Semicolon,
@@ -22,7 +21,10 @@ pub enum Token {
     Extern,
     Ampersand,
     SquareParenthesisOpen,
-    SquareParenthesisClose
+    SquareParenthesisClose,
+    LargerThan,
+    SmallerThan,
+    If
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -30,7 +32,8 @@ pub enum DataType {
     Int,
     Char,
     Array{ data_type: Box<DataType>, size: i32 },
-    Pointer{ data_type: Box<DataType> }
+    Pointer{ data_type: Box<DataType> },
+    Boolean,
 }
 
 pub fn tokenize(contents: &str) -> Vec<Token> {
@@ -63,6 +66,7 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
                     "public" => Token::Public,
                     "string" => Token::String,
                     "extern" => Token::Extern,
+                    "if" => Token::If,
                     _ => Token::Identifier(buffer)
                 });
         } else if c.is_ascii_digit() || c == '-' {
@@ -126,6 +130,8 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
                         '&' => Token::Ampersand,
                         '[' => Token::SquareParenthesisOpen,
                         ']' => Token::SquareParenthesisClose,
+                        '<' => Token::SmallerThan,
+                        '>' => Token::LargerThan,
                         _ => continue
                 });
         }

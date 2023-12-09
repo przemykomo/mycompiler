@@ -39,7 +39,7 @@ pub enum Statement {
     Increment(String),
     Decrement(String),
     FunctionCall { identifier: String, arguments: Vec<String> },
-    If { expression: Expression, scope: Vec::<Statement> }
+    If { expression: Expression, scope: Vec<Statement>, else_scope: Option<Vec<Statement>> }
 }
 
 #[derive(Debug)]
@@ -203,7 +203,17 @@ pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
                     let expression = parse_expression(iter);
                     if let Some((Token::ParenthesisClose, Token::CurlyBracketOpen)) = iter.next_tuple() {
                         let scope = parse_scope(iter);
-                        abstract_syntax_tree.push(Statement::If { expression, scope });
+                        let else_scope = if let Some(Token::Else) = iter.peek() {
+                            iter.next();
+                            if let Some(Token::CurlyBracketOpen) = iter.next() {
+                                Some(parse_scope(iter))
+                            } else {
+                                panic!("Expected opened curly brackets in th else statement!");
+                            }
+                        } else {
+                            None
+                        };
+                        abstract_syntax_tree.push(Statement::If { expression, scope, else_scope });
                     } else {
                         panic!("Expected closed parenthesis and opened curly brackets in the if statement!");
                     }

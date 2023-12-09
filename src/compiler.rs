@@ -255,7 +255,7 @@ fn compile_scope(state: &mut ScopeState, compilation_state: &mut CompilationStat
                                             pop rax\n", arguments_to_append, identifier);
                 state.assembly.push_str(&to_append);
             },
-            Statement::If { expression, scope } => {
+            Statement::If { expression, scope, else_scope } => {
                 let result = compile_expression(state, compilation_state, expression);
                 if result.data_type != DataType::Boolean {
                     panic!("If statement condition has to be a boolean!");
@@ -276,11 +276,32 @@ fn compile_scope(state: &mut ScopeState, compilation_state: &mut CompilationStat
                     };
                     compile_scope(&mut scope_state, compilation_state);
                     state.max_stack_size = state.max_stack_size.max(scope_state.max_stack_size);
-                    
                     state.assembly.push_str(&scope_state.assembly);
-                    state.assembly.push_str(&format!(".L{}:\n", label_id));
-
                     state.variables.truncate(variables_len);
+
+                    if let Some(else_scope) = else_scope {
+                        let label_id = compilation_state.unique_label_id;
+                        compilation_state.unique_label_id += 1;
+                        state.assembly.push_str(&format!("jmp .L{}\n.L{}:\n", label_id, label_id - 1));
+                    
+                        let variables_len = state.variables.len();
+                        let mut scope_state = ScopeState {
+                            iter: else_scope.iter().peekable(),
+                            stack_size_current: state.stack_size_current,
+                            max_stack_size: state.stack_size_current,
+                            variables: state.variables,
+                            assembly: String::new()
+                        };
+                        compile_scope(&mut scope_state, compilation_state);
+                        state.max_stack_size = state.max_stack_size.max(scope_state.max_stack_size);
+                        
+                        state.assembly.push_str(&scope_state.assembly);
+                        state.assembly.push_str(&format!(".L{}:\n", label_id));
+                        state.variables.truncate(variables_len);
+                    } else {
+                        state.assembly.push_str(&format!(".L{}:\n", label_id));
+                    }
+
                 } else {
                     todo!();
                 }

@@ -24,7 +24,8 @@ pub enum Token {
     SquareParenthesisClose,
     LargerThan,
     SmallerThan,
-    If
+    If,
+    Else
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -59,7 +60,6 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
 
             tokens.push(
                 match buffer.as_str() {
-                    //"exit" => Token::Exit,
                     "int" => Token::VariableDefinition(DataType::Int),
                     "char" => Token::VariableDefinition(DataType::Char),
                     "fn" => Token::Function,
@@ -67,6 +67,7 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
                     "string" => Token::String,
                     "extern" => Token::Extern,
                     "if" => Token::If,
+                    "else" => Token::Else,
                     _ => Token::Identifier(buffer)
                 });
         } else if c.is_ascii_digit() || c == '-' {

@@ -6,20 +6,10 @@ public fn _start() {
     char b = 'b';
     char c = 'c';
 
-    if (a == 'a') {
+    if (a == 'c') {
         internal(a);
-        char d = 'b';
-        if (b == d) {
-            internal(d);
-        }
-    }
-
-    if (c > 'd') {
+    } else {
         internal(c);
-    }
-
-    if (c < 'a') {
-        internal(a);
     }
 
     int i = 0;

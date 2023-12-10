@@ -1,4 +1,9 @@
 #include <stdio.h>
-void internal(char a) {
-    printf("Internal function: %c hello\n", a);
+
+void internal(long a, char b) {
+    printf("Internal function: %ld %c hello\n", a, b);
+}
+
+long getnum() {
+    return 123;
 }

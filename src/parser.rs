@@ -13,7 +13,8 @@ pub enum Expression {
     StringLiteral(String),
     Dereference(Box<Expression>),
     Reference(String),
-    AccessArrayElement { identifier: String, element: Box<Expression> }
+    AccessArrayElement { identifier: String, element: Box<Expression> },
+    FunctionCall(FunctionCall)
 }
 
 #[derive(Debug)]
@@ -38,26 +39,83 @@ pub enum Statement {
     ArrayElementAssigment { identifier: String, element: Expression, expression: Expression },
     Increment(String),
     Decrement(String),
-    FunctionCall { identifier: String, arguments: Vec<String> },
+    FunctionCall(FunctionCall),
     If { expression: Expression, scope: Vec<Statement>, else_scope: Option<Vec<Statement>> }
 }
 
 #[derive(Debug)]
-pub struct Function {
-    pub name: String,
+pub struct FunctionCall {
+    pub identifier: String,
+    pub arguments: Vec<String>
+}
+
+#[derive(Debug)]
+pub struct FunctionDefinition {
+    pub prototype: FunctionPrototype,
     pub public: bool,
-    pub body: Vec::<Statement>
+    pub body: Vec<Statement>
+}
+
+#[derive(Debug)]
+pub struct FunctionPrototype {
+    pub name: String,
+    pub return_type: DataType,
+    pub arguments: Vec<DataType>
 }
 
 #[derive(Debug)]
 pub struct ParsedUnit {
-    pub extern_declarations: Vec::<String>,
-    pub functions: Vec<Function>
+    pub function_declarations: Vec<FunctionPrototype>,
+    pub functions: Vec<FunctionDefinition>
+}
+
+pub fn parse_arguments_declaration(iter: &mut Peekable<Iter<Token>>) -> Vec<DataType> {
+    let mut arguments = Vec::<DataType>::new();
+
+    loop {
+        if let Some(Token::DataType(data_type)) = iter.next() {
+            if let Some(Token::Identifier(_)) = iter.next() {
+                arguments.push(data_type.clone());
+            } else {
+                panic!("Expected an identifier after a data type in the function");
+            }
+        } else {
+            panic!("Unexpected token in the function arguments")
+        }
+
+        if let Some(Token::Coma) = iter.peek() {
+            iter.next();
+        } else {
+            break;
+        }
+    }
+
+    return arguments;
+}
+
+pub fn parse_arguments_passing(iter: &mut Peekable<Iter<Token>>) -> Vec<String> {
+    let mut arguments = Vec::<String>::new();
+
+    loop {
+        if let Some(Token::Identifier(identifier)) = iter.next() {
+            arguments.push(identifier.clone());
+        } else {
+            panic!("Expected an identifier as a function parameter!");
+        }
+
+        if let Some(Token::Coma) = iter.peek() {
+            iter.next();
+        } else {
+            break;
+        }
+    }
+    
+    return arguments;
 }
 
 pub fn parse(tokens: &Vec<Token>) -> ParsedUnit {
     let mut parsed_unit = ParsedUnit {
-        extern_declarations: Vec::new(),
+        function_declarations: Vec::new(),
         functions: Vec::new()
     };
     let mut iter = tokens.iter().peekable();
@@ -65,39 +123,60 @@ pub fn parse(tokens: &Vec<Token>) -> ParsedUnit {
     while let Some(token) = iter.next() {
         dbg!(token);
         match token {
-            Token::Extern => {
-                if let Some((Token::Identifier(identifier), Token::Semicolon)) = iter.next_tuple() {
-                    parsed_unit.extern_declarations.push(identifier.to_string());
-                } else {
-                    panic!("Syntax error while parsing an extern statement.");
-                }
-            },
-            Token::Function => {
-                if let Some((Token::Identifier(identifier), Token::ParenthesisOpen,
-                    Token::ParenthesisClose, Token::CurlyBracketOpen)) = iter.next_tuple() {
-                    let function = Function {
-                        name: identifier.clone(),
-                        public: false,
-                        body: parse_scope(&mut iter)
+            Token::DataType(return_type) => {
+                if let Some((Token::Identifier(identifier), Token::ParenthesisOpen)) = iter.next_tuple() {
+                    let arguments = if let Some(Token::ParenthesisClose) = iter.peek() {
+                        Vec::new()
+                    } else {
+                        parse_arguments_declaration(&mut iter)
                     };
-                    parsed_unit.functions.push(function);
+
+                    if let Some(Token::ParenthesisClose) = iter.next() {
+                        let function_prototype = FunctionPrototype { name: identifier.clone(), return_type: return_type.clone(), arguments };
+                        match iter.next() {
+                            Some(Token::Semicolon) => parsed_unit.function_declarations.push(function_prototype),
+                            Some(Token::CurlyBracketOpen) => {
+                                let function = FunctionDefinition {
+                                    prototype: function_prototype,
+                                    public: false,
+                                    body: parse_scope(&mut iter)
+                                };
+                                parsed_unit.functions.push(function);
+                            },
+                            _ => panic!("Expected either \";\" or \"{{\" after the function prototype!")
+                        }
+                    } else {
+                        panic!("Expected closed parenthesis after function arguments!");
+                    }
+
                 } else {
                     panic!("Syntax error while paring function signature.");
                 }
             },
             Token::Public => {
-                if let Some((Token::Function, Token::Identifier(identifier), Token::ParenthesisOpen,
-                    Token::ParenthesisClose, Token::CurlyBracketOpen)) = iter.next_tuple() {
-                    let function = Function {
-                        name: identifier.clone(),
-                        public: true,
-                        body: parse_scope(&mut iter)
+                if let Some((Token::DataType(return_type), Token::Identifier(identifier), Token::ParenthesisOpen)) = iter.next_tuple() {
+                    let arguments = if let Some(Token::ParenthesisClose) = iter.peek() {
+                        Vec::new()
+                    } else {
+                        parse_arguments_declaration(&mut iter)
                     };
-                    parsed_unit.functions.push(function);
+
+                    if let Some((Token::ParenthesisClose, Token::CurlyBracketOpen)) = iter.next_tuple() {
+                        let function_prototype = FunctionPrototype { name: identifier.clone(), return_type: return_type.clone(), arguments };
+
+                        let function = FunctionDefinition {
+                            prototype: function_prototype,
+                            public: true,
+                            body: parse_scope(&mut iter)
+                        };
+                        parsed_unit.functions.push(function);
+                    } else {
+                        panic!("Expected closed parenthesis after function arguments!");
+                    }
                 } else {
-                    panic!("Syntax error while paring function signature.");
+                    panic!("Syntax error while paring a public function signature.");
                 }
-            }
+            },
             _ => {
                 panic!("Syntax error.");
             }
@@ -137,7 +216,7 @@ pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
     while let Some(token) = iter.next() {
         dbg!(token);
         match token {
-            Token::VariableDefinition(data_type) => {
+            Token::DataType(data_type) => {
                 match iter.peek() {
                     Some(Token::SquareParenthesisOpen) => {
                         iter.next();
@@ -176,13 +255,14 @@ pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
                         abstract_syntax_tree.push(Statement::VariableAssigment { identifier: identifier.clone(), expression: parse_expression(iter) });
                     },
                     Some(Token::ParenthesisOpen) => {
-                        let mut arguments : Vec<String> = Vec::new();
-                        while let Some(Token::Identifier(identifier)) = iter.peek() {
-                            iter.next();
-                            arguments.push(identifier.to_string());
-                        }
+                        let arguments = if let Some(Token::ParenthesisClose) = iter.peek() {
+                            Vec::new()
+                        } else {
+                            parse_arguments_passing(iter)
+                        };
+
                         if let Some(Token::ParenthesisClose) = iter.next() {
-                            abstract_syntax_tree.push(Statement::FunctionCall { identifier: identifier.clone(), arguments });
+                            abstract_syntax_tree.push(Statement::FunctionCall(FunctionCall { identifier: identifier.clone(), arguments }));
                         }
                     },
                     Some(Token::SquareParenthesisOpen) => {
@@ -309,16 +389,28 @@ fn parse_multiplication(iter: &mut Peekable<Iter<Token>>) -> Expression {
 fn parse_atom(iter: &mut Peekable<Iter<Token>>) -> Expression {
     match iter.next() {
         Some(Token::IntLiteral(value)) => Expression::IntLiteral(*value),
-        Some(Token::Identifier(other)) => {
-            if let Some(Token::SquareParenthesisOpen) = iter.peek() {
-                iter.next();
-                let expression = parse_expression(iter);
-                let Some(Token::SquareParenthesisClose) = iter.next() else {
-                    panic!("Expected closed square parenthesis.");
-                };
-                Expression::AccessArrayElement { identifier: other.clone(), element: Box::new(expression) }                    
-            } else {
-                Expression::Identifier(other.clone())
+        Some(Token::Identifier(identifier)) => {
+            match iter.peek() {
+                Some(Token::SquareParenthesisOpen) => {
+                    iter.next();
+                    let expression = parse_expression(iter);
+                    let Some(Token::SquareParenthesisClose) = iter.next() else {
+                        panic!("Expected closed square parenthesis.");
+                    };
+                    Expression::AccessArrayElement { identifier: identifier.clone(), element: Box::new(expression) }                    
+                },
+                Some(Token::ParenthesisOpen) => {
+                    iter.next();
+
+                    let arguments = if let Some(Token::ParenthesisClose) = iter.peek() {
+                        Vec::new()
+                    } else {
+                        parse_arguments_passing(iter)
+                    };
+                    
+                    Expression::FunctionCall(FunctionCall { identifier: identifier.clone() , arguments })
+                },
+                _ => Expression::Identifier(identifier.clone()),
             }
         },
         Some(Token::CharacterLiteral(c)) => Expression::CharacterLiteral(c.clone()),

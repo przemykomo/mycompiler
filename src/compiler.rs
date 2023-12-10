@@ -6,10 +6,11 @@ use std::slice::Iter;
 use indoc::formatdoc;
 use indoc::indoc;
 
-struct CompilationState<> {
+struct CompilationState<'a> {
     assembly: String,
     string_constants: HashMap<String, usize>,
-    unique_label_id: i32
+    unique_label_id: i32,
+    parsed_unit: &'a ParsedUnit
 }
 
 struct ScopeState<'a> {
@@ -48,6 +49,7 @@ pub fn sizeof(data_type: &DataType) -> i32 {
         DataType::Int | DataType::Pointer { .. } => 8,
         DataType::Char | DataType::Boolean => 1,
         DataType::Array { data_type: _, size: _ } => todo!(),
+        DataType::Void => panic!("sizeof(void) is invalid!")
     }
 }
 
@@ -56,6 +58,7 @@ pub fn sizeofword(data_type: &DataType) -> &str {
         DataType::Int | DataType::Pointer { .. } => "QWORD",
         DataType::Char | DataType::Boolean => "BYTE",
         DataType::Array { data_type, size: _ } => sizeofword(data_type),
+        DataType::Void => panic!("sizeofword(void) is invalid!")
     }
 }
 
@@ -79,25 +82,99 @@ pub fn reg_from_size(size: i32, reg: &str) -> &'static str {
     }
 }
 
+fn compile_function_call(compilation_state: &mut CompilationState, state: &mut ScopeState, function_call: &FunctionCall) -> ExpressionResult {
+    if let Some(function) = compilation_state.parsed_unit.function_declarations.iter().find(|f| f.name.eq(&function_call.identifier)) {
+        if function_call.arguments.len() != function.arguments.len() {
+            panic!("Passed wrong amoung of parameters to function \"{}\"", function.name);
+        }
+
+        let mut arguments_to_append : String = String::new();
+        for (i, argument) in function_call.arguments.iter().enumerate().rev() {
+            let variable = state.variables.iter().rev().find(|var| var.identifier.eq(argument)).expect(&format!("Undeclared variable: \"{}\"", argument));
+            if !variable.data_type.eq(function.arguments.get(i).expect("Already checked for a number of arguments, should never happen.")) {
+                panic!("Passed argument of a wrong type!");
+            }
+            
+            let instruction;
+            let register;
+            if let DataType::Array { data_type: _, size: _ } = &variable.data_type {
+                instruction = "lea";
+                register = "rax";
+            } else if sizeof(&variable.data_type) == 8 {
+                instruction = "mov";
+                register = "rax";
+            } else {
+                instruction = "movzx";
+                register = "eax";
+            }
+
+            if i > 5 {
+                let to_append = format!("{} {}, {} [rbp - {}]\n", instruction, register, sizeofword(&variable.data_type), variable.stack_location);
+
+                arguments_to_append.push_str(&to_append);
+            } else {
+                let register = match i {
+                    0 => "rdi",
+                    1 => "rsi",
+                    2 => "rax",
+                    3 => "rcx",
+                    4 => "r8",
+                    5 => "r9",
+                    _ => unreachable!()
+                };
+                let to_append = format!("{} {}, {} [rbp - {}]\n", instruction, register, sizeofword(&variable.data_type), variable.stack_location);
+                arguments_to_append.push_str(&to_append);
+            }
+        }
+
+        /* TODO: do some more inteligent saving of registers, commenting this out since I read
+         * variables from stack every time I need them anyway and I might need rax register for the
+         * return value.
+        let to_append = formatdoc!("push rax
+                                    push rdi
+                                    push rsi
+                                    push rax
+                                    push rcx
+                                    push r8
+                                    push r9
+                                    push r10
+                                    push r11
+                                    {}
+                                    call {}
+                                    pop r11
+                                    pop r10
+                                    pop r9
+                                    pop r8
+                                    pop rcx
+                                    pop rax
+                                    pop rsi
+                                    pop rdi
+                                    pop rax\n", arguments_to_append, function_call.identifier);
+        state.assembly.push_str(&to_append); */
+        state.assembly.push_str(&format!("{}\ncall {}\n", arguments_to_append, function_call.identifier));
+        return ExpressionResult { data_type:  function.return_type.clone(), result_container: ResultContainer::Register };
+    } else {
+        panic!("Cannot find function with a name \"{}\"", function_call.identifier);
+    }
+
+}
+
 pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
     let mut compilation_state = CompilationState {
         assembly: String::new(),
         string_constants: HashMap::new(),
-        unique_label_id: 0
+        unique_label_id: 0,
+        parsed_unit
     };
 
-    let mut extern_dec_iter = parsed_unit.extern_declarations.iter();
-    while let Some(extern_delcaration) = extern_dec_iter.next() {
-        let to_append = formatdoc!("extern {}\n", extern_delcaration);
-        compilation_state.assembly.push_str(&to_append);
+    for function_declaration in parsed_unit.function_declarations.iter() {
+        compilation_state.assembly.push_str(&format!("extern {}\n", function_declaration.name));
     }
 
-    let mut function_iter = parsed_unit.functions.iter();
-
-    while let Some(function) = function_iter.next() {
+    for function in parsed_unit.functions.iter() {
         let mut to_append : String;
         if function.public {
-            to_append = format!("global {}\n", function.name);
+            to_append = format!("global {}\n", function.prototype.name);
             compilation_state.assembly.push_str(&to_append);
         }
         //TODO: make compile_scope return information about used registries and only push those.
@@ -109,7 +186,7 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
                                 push r14
                                 push r15
                                 push rbp
-                                mov rbp, rsp\n", function.name);
+                                mov rbp, rsp\n", function.prototype.name);
         compilation_state.assembly.push_str(&to_append);
         let mut variables = Vec::new();
         let mut scope_state = ScopeState {
@@ -197,63 +274,8 @@ fn compile_scope(state: &mut ScopeState, compilation_state: &mut CompilationStat
                 let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier)).expect(&format!("Undeclared variable: \"{}\"", identifier));
                 state.assembly.push_str(&format!("dec {} [rbp - {}]\n", sizeofword(&variable.data_type), variable.stack_location));
             },
-            Statement::FunctionCall { identifier, arguments } => {
-                let mut arguments_to_append : String = String::new();
-                for (i, argument) in arguments.iter().enumerate().rev()  {
-                    let variable = state.variables.iter().rev().find(|var| var.identifier.eq(argument)).expect(&format!("Undeclared variable: \"{}\"", argument));
-
-                    let instruction;
-                    let register;
-                    if let DataType::Array { data_type: _, size: _ } = &variable.data_type {
-                        instruction = "lea";
-                        register = "rax";
-                    } else if sizeof(&variable.data_type) == 8 {
-                        instruction = "mov";
-                        register = "rax";
-                    } else {
-                        instruction = "movzx";
-                        register = "eax";
-                    }
-
-                    if i > 5 {
-                        let to_append = format!("{} {}, {} [rbp - {}]\n", instruction, register, sizeofword(&variable.data_type), variable.stack_location);
-
-                        arguments_to_append.push_str(&to_append);
-                    } else {
-                        let register = match i {
-                            0 => "rdi",
-                            1 => "rsi",
-                            2 => "rax",
-                            3 => "rcx",
-                            4 => "r8",
-                            5 => "r9",
-                            _ => unreachable!()
-                        };
-                        let to_append = format!("{} {}, {} [rbp - {}]\n", instruction, register, sizeofword(&variable.data_type), variable.stack_location);
-                        arguments_to_append.push_str(&to_append);
-                    }
-                }
-                let to_append = formatdoc!("push rax
-                                            push rdi
-                                            push rsi
-                                            push rax
-                                            push rcx
-                                            push r8
-                                            push r9
-                                            push r10
-                                            push r11
-                                            {}
-                                            call {}
-                                            pop r11
-                                            pop r10
-                                            pop r9
-                                            pop r8
-                                            pop rcx
-                                            pop rax
-                                            pop rsi
-                                            pop rdi
-                                            pop rax\n", arguments_to_append, identifier);
-                state.assembly.push_str(&to_append);
+            Statement::FunctionCall(function_call) => {
+                let _ = compile_function_call(compilation_state, state, function_call);
             },
             Statement::If { expression, scope, else_scope } => {
                 let result = compile_expression(state, compilation_state, expression);
@@ -431,6 +453,9 @@ fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compilatio
             }
             state.assembly.push_str(&format!("lea rax, [.String{}]\n", id));
             ExpressionResult { data_type: DataType::Pointer { data_type: Box::new(DataType::Char) }, result_container: ResultContainer::Register }
+        },
+        Expression::FunctionCall(function_call) => {
+            compile_function_call(compilation_state, state, function_call)
         }
     }
 }

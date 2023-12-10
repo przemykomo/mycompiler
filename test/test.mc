@@ -1,16 +1,16 @@
-extern internal;
-extern exit;
+int getnum();
+void internal(int a, char b);
+void exit (int __status);
 
-public fn _start() {
-    char a = 'a';
+public void _start() {
+
+    int a = getnum();
+
+    a++;
+
     char b = 'b';
-    char c = 'c';
 
-    if (a == 'c') {
-        internal(a);
-    } else {
-        internal(c);
-    }
+    internal(a, b);
 
     int i = 0;
     exit(i);

@@ -3,7 +3,7 @@ pub enum Token {
     IntLiteral(i32),
     CharacterLiteral(char),
     Semicolon,
-    VariableDefinition(DataType),
+    DataType(DataType),
     Identifier(String),
     EqualSign,
     PlusSign,
@@ -12,7 +12,6 @@ pub enum Token {
     DivisionSign,
     ParenthesisOpen,
     ParenthesisClose,
-    Function,
     CurlyBracketOpen,
     CurlyBracketClose,
     Public,
@@ -25,7 +24,8 @@ pub enum Token {
     LargerThan,
     SmallerThan,
     If,
-    Else
+    Else,
+    Coma
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -35,6 +35,7 @@ pub enum DataType {
     Array{ data_type: Box<DataType>, size: i32 },
     Pointer{ data_type: Box<DataType> },
     Boolean,
+    Void
 }
 
 pub fn tokenize(contents: &str) -> Vec<Token> {
@@ -60,9 +61,9 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
 
             tokens.push(
                 match buffer.as_str() {
-                    "int" => Token::VariableDefinition(DataType::Int),
-                    "char" => Token::VariableDefinition(DataType::Char),
-                    "fn" => Token::Function,
+                    "int" => Token::DataType(DataType::Int),
+                    "char" => Token::DataType(DataType::Char),
+                    "void" => Token::DataType(DataType::Void),
                     "public" => Token::Public,
                     "string" => Token::String,
                     "extern" => Token::Extern,
@@ -133,6 +134,7 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
                         ']' => Token::SquareParenthesisClose,
                         '<' => Token::SmallerThan,
                         '>' => Token::LargerThan,
+                        ',' => Token::Coma,
                         _ => continue
                 });
         }

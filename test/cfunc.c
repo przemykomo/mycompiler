@@ -1,7 +1,7 @@
 #include <stdio.h>
 
-void internal(long a, char b) {
-    printf("Internal function: %ld %c hello\n", a, b);
+void internal(long a, long b, char c) {
+    printf("Internal function: %ld %ld %c hello\n", a, b, c);
 }
 
 long getnum() {

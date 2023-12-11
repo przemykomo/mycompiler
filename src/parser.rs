@@ -40,7 +40,8 @@ pub enum Statement {
     Increment(String),
     Decrement(String),
     FunctionCall(FunctionCall),
-    If { expression: Expression, scope: Vec<Statement>, else_scope: Option<Vec<Statement>> }
+    If { expression: Expression, scope: Vec<Statement>, else_scope: Option<Vec<Statement>> },
+    Return(Expression)
 }
 
 #[derive(Debug)]
@@ -303,7 +304,10 @@ pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
             },
             Token::CurlyBracketClose => {
                 return abstract_syntax_tree;
-            }
+            },
+            Token::Return => {
+                abstract_syntax_tree.push(Statement::Return(parse_expression(iter)));
+            },
             _ => {}
         }
     }

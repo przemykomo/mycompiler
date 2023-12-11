@@ -1,17 +1,20 @@
 int getnum();
-void internal(int a, char b);
-void exit (int __status);
+void internal(int a, int b, char c);
 
-public void _start() {
+int mynum() {
+    return 55;
+}
 
+public int main() {
     int a = getnum();
+    int b = mynum();
 
     a++;
+    b--;
 
-    char b = 'b';
+    char c = 'b';
 
-    internal(a, b);
+    internal(a, b, c);
 
-    int i = 0;
-    exit(i);
+    return 25;
 }

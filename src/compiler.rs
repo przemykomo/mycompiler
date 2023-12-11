@@ -18,6 +18,7 @@ struct ScopeState<'a> {
     stack_size_current: i32,
     max_stack_size: i32,
     variables: &'a mut Vec<Variable>,
+    current_function: &'a FunctionDefinition,
     assembly: String
 }
 
@@ -82,8 +83,16 @@ pub fn reg_from_size(size: i32, reg: &str) -> &'static str {
     }
 }
 
+fn get_function<'a>(compilation_state: &'a mut CompilationState, identifier: &str) -> Option<&'a FunctionPrototype> {
+    if let Some(function) = compilation_state.parsed_unit.functions.iter().find(|f| f.prototype.name.eq(identifier)) {
+        Some(&function.prototype)
+    } else {
+        compilation_state.parsed_unit.function_declarations.iter().find(|f| f.name.eq(identifier))
+    }
+}
+
 fn compile_function_call(compilation_state: &mut CompilationState, state: &mut ScopeState, function_call: &FunctionCall) -> ExpressionResult {
-    if let Some(function) = compilation_state.parsed_unit.function_declarations.iter().find(|f| f.name.eq(&function_call.identifier)) {
+    if let Some(function) = get_function(compilation_state, &function_call.identifier) {
         if function_call.arguments.len() != function.arguments.len() {
             panic!("Passed wrong amoung of parameters to function \"{}\"", function.name);
         }
@@ -194,19 +203,21 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
             stack_size_current: 0,
             max_stack_size: 0,
             variables: &mut variables,
+            current_function: &function,
             assembly: String::new()
         };
         compile_scope(&mut scope_state, &mut compilation_state);
         compilation_state.assembly.push_str(&format!("sub rsp, {}\n", ((scope_state.max_stack_size + 15) / 16) * 16)); // align the stack frame to 2 bytes
         compilation_state.assembly.push_str(&scope_state.assembly);
-        to_append = indoc!("mov rsp, rbp
+        to_append = formatdoc!(".{}.end:
+                            mov rsp, rbp
                             pop rbp
                             pop r15
                             pop r14
                             pop r13
                             pop r12
                             pop rbx
-                            ret\n").to_string();
+                            ret\n", function.prototype.name);
         compilation_state.assembly.push_str(&to_append);
     }
 
@@ -246,6 +257,15 @@ fn compile_scope(state: &mut ScopeState, compilation_state: &mut CompilationStat
                 }
                 let size = sizeof(&variable.data_type);
                 state.assembly.push_str(&format!("mov {} [rbp - {}], {}\n", sizeofword(&variable.data_type), variable.stack_location, reg_from_size(size, "rax")));
+            },
+            Statement::Return(expression) => {
+                let result = compile_expression(state, compilation_state, expression);
+                
+                if result.data_type != state.current_function.prototype.return_type {
+                    panic!("Trying to return a different data type than in the function declaration!");
+                }
+
+                state.assembly.push_str(&format!("jmp .{}.end\n", state.current_function.prototype.name));
             },
             Statement::ArrayElementAssigment { identifier, element, expression } => {
                 let element_result = compile_expression(state, compilation_state, &element);
@@ -294,6 +314,7 @@ fn compile_scope(state: &mut ScopeState, compilation_state: &mut CompilationStat
                         stack_size_current: state.stack_size_current,
                         max_stack_size: state.stack_size_current,
                         variables: state.variables,
+                        current_function: state.current_function,
                         assembly: String::new()
                     };
                     compile_scope(&mut scope_state, compilation_state);
@@ -311,6 +332,7 @@ fn compile_scope(state: &mut ScopeState, compilation_state: &mut CompilationStat
                             iter: else_scope.iter().peekable(),
                             stack_size_current: state.stack_size_current,
                             max_stack_size: state.stack_size_current,
+                            current_function: state.current_function,
                             variables: state.variables,
                             assembly: String::new()
                         };

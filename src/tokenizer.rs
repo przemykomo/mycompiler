@@ -25,7 +25,8 @@ pub enum Token {
     SmallerThan,
     If,
     Else,
-    Coma
+    Coma,
+    Return
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -69,6 +70,7 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
                     "extern" => Token::Extern,
                     "if" => Token::If,
                     "else" => Token::Else,
+                    "return" => Token::Return,
                     _ => Token::Identifier(buffer)
                 });
         } else if c.is_ascii_digit() || c == '-' {

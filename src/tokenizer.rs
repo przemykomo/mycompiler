@@ -2,6 +2,7 @@
 pub enum Token {
     IntLiteral(i32),
     CharacterLiteral(char),
+    BoolLiteral(bool),
     Semicolon,
     DataType(DataType),
     Identifier(String),
@@ -34,7 +35,7 @@ pub enum DataType {
     Int,
     Char,
     Array{ data_type: Box<DataType>, size: i32 },
-    Pointer{ data_type: Box<DataType> },
+    Pointer(Box<DataType>),
     Boolean,
     Void
 }
@@ -65,12 +66,15 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
                     "int" => Token::DataType(DataType::Int),
                     "char" => Token::DataType(DataType::Char),
                     "void" => Token::DataType(DataType::Void),
+                    "bool" => Token::DataType(DataType::Boolean),
                     "public" => Token::Public,
                     "string" => Token::String,
                     "extern" => Token::Extern,
                     "if" => Token::If,
                     "else" => Token::Else,
                     "return" => Token::Return,
+                    "true" => Token::BoolLiteral(true),
+                    "false" => Token::BoolLiteral(false),
                     _ => Token::Identifier(buffer)
                 });
         } else if c.is_ascii_digit() || c == '-' {

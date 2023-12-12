@@ -7,6 +7,7 @@ use itertools::Itertools;
 pub enum Expression {
     IntLiteral(i32),
     CharacterLiteral(char),
+    BoolLiteral(bool),
     Identifier(String),
     ArithmeticExpression { left: Box<Expression>, right: Box<Expression>, operator: ArithmeticOperator },
     ComparisonExpression { left: Box<Expression>, right: Box<Expression>, operator: ComparisonOperator },
@@ -229,7 +230,7 @@ pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
                     },
                     Some(Token::MultiplySign) => {
                         iter.next();
-                        variable_definition(iter, &mut abstract_syntax_tree, &DataType::Pointer { data_type: Box::new(data_type.clone()) });
+                        variable_definition(iter, &mut abstract_syntax_tree, &DataType::Pointer(Box::new(data_type.clone())));
                     },
                     _ => {
                         variable_definition(iter, &mut abstract_syntax_tree, data_type);
@@ -418,6 +419,7 @@ fn parse_atom(iter: &mut Peekable<Iter<Token>>) -> Expression {
             }
         },
         Some(Token::CharacterLiteral(c)) => Expression::CharacterLiteral(c.clone()),
+        Some(Token::BoolLiteral(b)) => Expression::BoolLiteral(b.clone()),
         Some(Token::MultiplySign) => Expression::Dereference(Box::new(parse_atom(iter))),
         Some(Token::Ampersand) => {
             if let Some(Token::Identifier(variable)) = iter.next() {

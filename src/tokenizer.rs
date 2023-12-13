@@ -3,6 +3,7 @@ pub enum Token {
     IntLiteral(i32),
     CharacterLiteral(char),
     BoolLiteral(bool),
+    FloatLiteral(String),
     Semicolon,
     DataType(DataType),
     Identifier(String),
@@ -37,7 +38,8 @@ pub enum DataType {
     Array{ data_type: Box<DataType>, size: i32 },
     Pointer(Box<DataType>),
     Boolean,
-    Void
+    Void,
+    Float
 }
 
 pub fn tokenize(contents: &str) -> Vec<Token> {
@@ -67,6 +69,7 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
                     "char" => Token::DataType(DataType::Char),
                     "void" => Token::DataType(DataType::Void),
                     "bool" => Token::DataType(DataType::Boolean),
+                    "float" => Token::DataType(DataType::Float),
                     "public" => Token::Public,
                     "string" => Token::String,
                     "extern" => Token::Extern,
@@ -78,11 +81,15 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
                     _ => Token::Identifier(buffer)
                 });
         } else if c.is_ascii_digit() || c == '-' {
+            let mut is_float = false;
             loop {
                 buffer.push(c);
                 if let Some(temp) = iter.peek() {
                     if temp.is_ascii_digit() {
                         c = iter.next().unwrap();
+                    } else if temp.eq(&'.') {
+                        c = iter.next().unwrap();
+                        is_float = true;
                     } else {
                         break;
                     }
@@ -91,10 +98,18 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
                 }
             }
 
-            if let Ok(num) = buffer.parse::<i32>() {
-                tokens.push(Token::IntLiteral(num));
-            } else if buffer == "-" {
-                tokens.push(Token::MinusSign);
+            if is_float {
+                if let Ok(_) = buffer.parse::<f32>() {
+                    tokens.push(Token::FloatLiteral(buffer));
+                } else {
+                    panic!("Cannot parse a float constant: \"{}\"", buffer);
+                }
+            } else {
+                if let Ok(num) = buffer.parse::<i32>() {
+                    tokens.push(Token::IntLiteral(num));
+                } else if buffer == "-" {
+                    tokens.push(Token::MinusSign);
+                }
             }
         } else if c == '"' {
             loop {

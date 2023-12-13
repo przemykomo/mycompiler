@@ -8,6 +8,7 @@ pub enum Expression {
     IntLiteral(i32),
     CharacterLiteral(char),
     BoolLiteral(bool),
+    FloatLiteral(String),
     Identifier(String),
     ArithmeticExpression { left: Box<Expression>, right: Box<Expression>, operator: ArithmeticOperator },
     ComparisonExpression { left: Box<Expression>, right: Box<Expression>, operator: ComparisonOperator },
@@ -394,6 +395,7 @@ fn parse_multiplication(iter: &mut Peekable<Iter<Token>>) -> Expression {
 fn parse_atom(iter: &mut Peekable<Iter<Token>>) -> Expression {
     match iter.next() {
         Some(Token::IntLiteral(value)) => Expression::IntLiteral(*value),
+        Some(Token::FloatLiteral(value)) => Expression::FloatLiteral(value.clone()),
         Some(Token::Identifier(identifier)) => {
             match iter.peek() {
                 Some(Token::SquareParenthesisOpen) => {

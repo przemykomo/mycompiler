@@ -1,9 +1,5 @@
 #include <stdio.h>
 
-void internal(_Bool d) {
-    printf("Internal function: %d\n", d);
-}
-
-long getnum() {
-    return 10;
+void other(float a, float b, float c) {
+    printf("The float: %f %f %f\n", a, b, c);
 }

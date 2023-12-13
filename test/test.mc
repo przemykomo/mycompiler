@@ -1,10 +1,9 @@
-void other(float a, float b, float c);
+void other(float a);
 
 public int main() {
-    float a = 15.0;
-    float b = 3.18;
-    float c = 2.48;
-    other(b, c, a);
+    float a = 20.0;
+    float c = a / 2.3 + 5.0 * 12.87 - 53.88;
+    other(c);
 
     return 0;
 }

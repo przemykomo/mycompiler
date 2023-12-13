@@ -463,12 +463,17 @@ fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compilatio
             let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier)).expect(&format!("Undeclared variable: \"{}\"", identifier));
             let instruction;
             let register;
-            if sizeof(&variable.data_type) == 8 {
-                instruction = "mov";
-                register = "rax";
+            if is_float(&variable.data_type) {
+                instruction = "movss";
+                register = "xmm0";
             } else {
-                instruction = "movzx";
-                register = "eax";
+                if sizeof(&variable.data_type) == 8 {
+                    instruction = "mov";
+                    register = "rax";
+                } else {
+                    instruction = "movzx";
+                    register = "eax";
+                }
             }
             state.assembly.push_str(&format!("{} {}, {} [rbp - {}]\n", instruction, register, sizeofword(&variable.data_type), variable.stack_location));
             ExpressionResult { data_type: variable.data_type.clone(), result_container: ResultContainer::Register }
@@ -483,12 +488,17 @@ fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compilatio
                 }
                 let instruction;
                 let register;
-                if sizeof(&data_type) == 8 {
-                    instruction = "mov";
-                    register = "rax";
+                if is_float(&data_type) {
+                    instruction = "movss";
+                    register = "xmm0";
                 } else {
-                    instruction = "movzx";
-                    register = "eax";
+                    if sizeof(&data_type) == 8 {
+                        instruction = "mov";
+                        register = "rax";
+                    } else {
+                        instruction = "movzx";
+                        register = "eax";
+                    }
                 }
                 state.assembly.push_str(&format!("{} {}, {} [rbp - {} + rax]\n", instruction, register, sizeofword(&data_type), stack_location));
                 ExpressionResult { data_type: *data_type, result_container: ResultContainer::Register }
@@ -498,23 +508,41 @@ fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compilatio
         },
         Expression::ArithmeticExpression { left, right, operator } => {
             let right_result = compile_expression(state, compilation_state, right);
-            state.assembly.push_str("push rax\n");
-            let left_result = compile_expression(state, compilation_state, left);
-            match operator {
-                ArithmeticOperator::Add => state.assembly.push_str("pop rbx\n add rax, rbx\n"),
-                ArithmeticOperator::Subtract => state.assembly.push_str("pop rbx\n sub rax, rbx\n"),
-                ArithmeticOperator::Multiply => state.assembly.push_str("pop rbx\n imul rbx\n"),
-                ArithmeticOperator::Divide => state.assembly.push_str("pop rbx\n idiv rbx\n")
+            match right_result.data_type {
+                DataType::Int => {
+                    state.assembly.push_str("push rax\n");
+                },
+                DataType::Float => {
+                    state.assembly.push_str("movd eax, xmm0\npush rax\n");
+                },
+                _ => panic!("Cannot do an arithmetic operation!")
             }
-            
-            if let DataType::Int = right_result.data_type  {
-                if let DataType::Int = left_result.data_type {
+            let left_result = compile_expression(state, compilation_state, left);
+
+            if !left_result.data_type.eq(&right_result.data_type) {
+                panic!("Cannot do arithmetic operations on values of different data types!");
+            }
+
+            match left_result.data_type {
+                DataType::Int => {
+                    match operator {
+                        ArithmeticOperator::Add => state.assembly.push_str("pop rbx\n add rax, rbx\n"),
+                        ArithmeticOperator::Subtract => state.assembly.push_str("pop rbx\n sub rax, rbx\n"),
+                        ArithmeticOperator::Multiply => state.assembly.push_str("pop rbx\n imul rbx\n"),
+                        ArithmeticOperator::Divide => state.assembly.push_str("pop rbx\n idiv rbx\n")
+                    }
                     ExpressionResult { data_type: DataType::Int, result_container: ResultContainer::Register }
-                } else {
-                    panic!("Cannot add non integers!");
-                }
-            } else {
-                panic!("Cannot add non integers!");
+                },
+                DataType::Float => {
+                    match operator {
+                        ArithmeticOperator::Add => state.assembly.push_str("pop rax\nmovd xmm1, eax\naddss xmm0, xmm1\n"),
+                        ArithmeticOperator::Subtract => state.assembly.push_str("pop rax\nmovd xmm1, eax\nsubss xmm0, xmm1\n"),
+                        ArithmeticOperator::Multiply => state.assembly.push_str("pop rax\nmovd xmm1, eax\nmulss xmm0, xmm1\n"),
+                        ArithmeticOperator::Divide => state.assembly.push_str("pop rax\nmovd xmm1, eax\ndivss xmm0, xmm1\n")
+                    }
+                    ExpressionResult { data_type: DataType::Float, result_container: ResultContainer::FloatRegister }
+                },
+                _ => panic!("Cannot do an arithmetic operation!")
             }
         },
         Expression::ComparisonExpression { left, right, operator } => {

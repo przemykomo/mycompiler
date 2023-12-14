@@ -200,7 +200,10 @@ fn compile_function_call(compilation_state: &mut CompilationState, state: &mut S
                                     pop rax\n", arguments_to_append, function_call.identifier);
         state.assembly.push_str(&to_append); */
         state.assembly.push_str(&format!("{}call {}\n", arguments_to_append, function_call.identifier));
-        return ExpressionResult { data_type:  function.return_type.clone(), result_container: ResultContainer::Register };
+        if is_float(&function.return_type) {
+            return ExpressionResult { data_type: function.return_type.clone(), result_container: ResultContainer::FloatRegister };
+        }
+        return ExpressionResult { data_type: function.return_type.clone(), result_container: ResultContainer::Register };
     } else {
         panic!("Cannot find function with a name \"{}\"", function_call.identifier);
     }

@@ -28,7 +28,9 @@ pub enum Token {
     If,
     Else,
     Coma,
-    Return
+    Return,
+    Struct,
+    Period
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -78,6 +80,7 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
                     "return" => Token::Return,
                     "true" => Token::BoolLiteral(true),
                     "false" => Token::BoolLiteral(false),
+                    "struct" => Token::String,
                     _ => Token::Identifier(buffer)
                 });
         } else if c.is_ascii_digit() || c == '-' {
@@ -156,6 +159,7 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
                         '<' => Token::SmallerThan,
                         '>' => Token::LargerThan,
                         ',' => Token::Coma,
+                        '.' => Token::Period,
                         _ => continue
                 });
         }

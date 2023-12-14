@@ -9,14 +9,26 @@ pub enum Expression {
     CharacterLiteral(char),
     BoolLiteral(bool),
     FloatLiteral(String),
-    Identifier(String),
+    Identifier(Vec<String>),
     ArithmeticExpression { left: Box<Expression>, right: Box<Expression>, operator: ArithmeticOperator },
     ComparisonExpression { left: Box<Expression>, right: Box<Expression>, operator: ComparisonOperator },
     StringLiteral(String),
     Dereference(Box<Expression>),
-    Reference(String),
-    AccessArrayElement { identifier: String, element: Box<Expression> },
+    Reference(Vec<String>),
+    AccessArrayElement { identifier: Vec<String>, element: Box<Expression> },
     FunctionCall(FunctionCall)
+}
+
+#[derive(Debug)]
+pub struct StructDeclaration {
+    identifier: String,
+    members: Vec<StructMember>
+}
+
+#[derive(Debug)]
+pub struct StructMember {
+    identifier: String,
+    data_type: DataType
 }
 
 #[derive(Debug)]
@@ -37,10 +49,10 @@ pub enum ComparisonOperator {
 #[derive(Debug)]
 pub enum Statement {
     VariableDefinition { identifier: String, expression: Option<Expression>, data_type: DataType },
-    VariableAssigment { identifier: String, expression: Expression },
-    ArrayElementAssigment { identifier: String, element: Expression, expression: Expression },
-    Increment(String),
-    Decrement(String),
+    VariableAssigment { identifier: Vec<String>, expression: Expression },
+    ArrayElementAssigment { identifier: Vec<String>, element: Expression, expression: Expression },
+    Increment(Vec<String>),
+    Decrement(Vec<String>),
     FunctionCall(FunctionCall),
     If { expression: Expression, scope: Vec<Statement>, else_scope: Option<Vec<Statement>> },
     Return(Expression)
@@ -69,7 +81,8 @@ pub struct FunctionPrototype {
 #[derive(Debug)]
 pub struct ParsedUnit {
     pub function_declarations: Vec<FunctionPrototype>,
-    pub functions: Vec<FunctionDefinition>
+    pub functions: Vec<FunctionDefinition>,
+    pub struct_declarations: Vec<StructDeclaration>
 }
 
 pub fn parse_arguments_declaration(iter: &mut Peekable<Iter<Token>>) -> Vec<DataType> {
@@ -119,13 +132,33 @@ pub fn parse_arguments_passing(iter: &mut Peekable<Iter<Token>>) -> Vec<String> 
 pub fn parse(tokens: &Vec<Token>) -> ParsedUnit {
     let mut parsed_unit = ParsedUnit {
         function_declarations: Vec::new(),
-        functions: Vec::new()
+        functions: Vec::new(),
+        struct_declarations: Vec::new()
     };
     let mut iter = tokens.iter().peekable();
 
     while let Some(token) = iter.next() {
         dbg!(token);
         match token {
+            Token::Struct => {
+                if let Some((Token::Identifier(identifier), Token::CurlyBracketOpen)) = iter.next_tuple() {
+                    let mut members : Vec<StructMember> = Vec::new();
+                    while let Some((Token::DataType(data_type), Token::Identifier(member_name))) = iter.next_tuple() {
+                        members.push(StructMember { identifier: member_name.clone(), data_type: data_type.clone() });
+                        let Some(Token::Coma) = iter.next() else {
+                            if let Some(Token::CurlyBracketClose) = iter.next() {
+                                break;
+                            } else {
+                                panic!("Expected a '}}' after last struct element!");
+                            }
+                        };
+                    }
+
+                    parsed_unit.struct_declarations.push(StructDeclaration { identifier: identifier.clone(), members })
+                } else {
+                    panic!("Expected struct declaration after the struct token!");
+                }
+            },
             Token::DataType(return_type) => {
                 if let Some((Token::Identifier(identifier), Token::ParenthesisOpen)) = iter.next_tuple() {
                     let arguments = if let Some(Token::ParenthesisClose) = iter.peek() {
@@ -213,6 +246,15 @@ fn variable_definition(iter: &mut Peekable<Iter<Token>>, abstract_syntax_tree: &
     }
 }
 
+pub fn parse_identifier(iter: &mut Peekable<Iter<Token>>, first: String) -> Vec<String> {
+    let mut identifiers: Vec<String> = Vec::new();
+    identifiers.push(first);
+    while let Some((Token::Period, Token::Identifier(identifier))) = iter.next_tuple() {
+        identifiers.push(identifier.clone());
+    }
+    return identifiers;
+}
+
 pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
     let mut abstract_syntax_tree = Vec::<Statement>::new();
 
@@ -238,24 +280,25 @@ pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
                     }
                 }
             },
-            Token::Identifier(identifier) => {
+            Token::Identifier(first) => {
+                let identifier = parse_identifier(iter, first.clone());
                 match iter.next() {
                     Some(Token::PlusSign) => {
                         if let Some(Token::PlusSign) = iter.next() {
-                            abstract_syntax_tree.push(Statement::Increment(identifier.clone()));
+                            abstract_syntax_tree.push(Statement::Increment(identifier));
                         } else {
                             panic!();
                         }
                     },
                     Some(Token::MinusSign) => {
                         if let Some(Token::MinusSign) = iter.next() {
-                            abstract_syntax_tree.push(Statement::Decrement(identifier.clone()));
+                            abstract_syntax_tree.push(Statement::Decrement(identifier));
                         } else {
                             panic!();
                         }
                     },
                     Some(Token::EqualSign) => {
-                        abstract_syntax_tree.push(Statement::VariableAssigment { identifier: identifier.clone(), expression: parse_expression(iter) });
+                        abstract_syntax_tree.push(Statement::VariableAssigment { identifier, expression: parse_expression(iter) });
                     },
                     Some(Token::ParenthesisOpen) => {
                         let arguments = if let Some(Token::ParenthesisClose) = iter.peek() {
@@ -265,14 +308,18 @@ pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
                         };
 
                         if let Some(Token::ParenthesisClose) = iter.next() {
-                            abstract_syntax_tree.push(Statement::FunctionCall(FunctionCall { identifier: identifier.clone(), arguments }));
+                            if identifier.len() == 1 {
+                                abstract_syntax_tree.push(Statement::FunctionCall(FunctionCall { identifier: first.clone(), arguments }));
+                            } else {
+                                panic!("Trying to use a struct member as a function name!\n");
+                            }
                         }
                     },
                     Some(Token::SquareParenthesisOpen) => {
                         let element = parse_expression(iter);
                         if let Some((Token::SquareParenthesisClose, Token::EqualSign)) = iter.next_tuple() {
                             let expression = parse_expression(iter);
-                            abstract_syntax_tree.push(Statement::ArrayElementAssigment { identifier: identifier.clone(), element, expression });
+                            abstract_syntax_tree.push(Statement::ArrayElementAssigment { identifier, element, expression });
                         }
                     },
                     other => {
@@ -396,7 +443,8 @@ fn parse_atom(iter: &mut Peekable<Iter<Token>>) -> Expression {
     match iter.next() {
         Some(Token::IntLiteral(value)) => Expression::IntLiteral(*value),
         Some(Token::FloatLiteral(value)) => Expression::FloatLiteral(value.clone()),
-        Some(Token::Identifier(identifier)) => {
+        Some(Token::Identifier(first)) => {
+            let mut identifier = parse_identifier(iter, first.clone());
             match iter.peek() {
                 Some(Token::SquareParenthesisOpen) => {
                     iter.next();
@@ -415,7 +463,15 @@ fn parse_atom(iter: &mut Peekable<Iter<Token>>) -> Expression {
                         parse_arguments_passing(iter)
                     };
                     
-                    Expression::FunctionCall(FunctionCall { identifier: identifier.clone() , arguments })
+                    if let Some(Token::ParenthesisClose) = iter.next() {
+                        if identifier.len() == 1 {
+                            Expression::FunctionCall(FunctionCall { identifier: first.clone() , arguments })
+                        } else {
+                            panic!("Trying to use a struct member as a function name!\n");
+                        }
+                    } else {
+                        panic!("Expected ')' at the end of function call.");
+                    }
                 },
                 _ => Expression::Identifier(identifier.clone()),
             }
@@ -424,8 +480,9 @@ fn parse_atom(iter: &mut Peekable<Iter<Token>>) -> Expression {
         Some(Token::BoolLiteral(b)) => Expression::BoolLiteral(b.clone()),
         Some(Token::MultiplySign) => Expression::Dereference(Box::new(parse_atom(iter))),
         Some(Token::Ampersand) => {
-            if let Some(Token::Identifier(variable)) = iter.next() {
-                Expression::Reference(variable.clone())
+            if let Some(Token::Identifier(first)) = iter.next() {
+                let mut identififer = parse_identifier(iter, first.clone());
+                Expression::Reference(identififer)
             } else {
                 panic!("Expected an identifier after a reference operator.");
             }

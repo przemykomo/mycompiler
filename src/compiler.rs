@@ -9,7 +9,8 @@ struct CompilationState<'a> {
     string_constants: HashMap<String, usize>,
     float_constants: HashMap<String, usize>,
     unique_label_id: i32,
-    parsed_unit: &'a ParsedUnit
+    parsed_unit: &'a ParsedUnit,
+    struct_types: HashMap<String, StructType>
 }
 
 struct ScopeState<'a> {
@@ -21,10 +22,21 @@ struct ScopeState<'a> {
     assembly: String
 }
 
+#[derive(Debug)]
 struct Variable {
     identifier: String,
     stack_location: i32,
     data_type: DataType
+}
+
+struct StructType {
+    members: Vec<StructMemberWithOffset>,
+    size: i32
+}
+
+struct StructMemberWithOffset {
+    member: StructMember,
+    offset: i32
 }
 
 #[must_use]
@@ -38,7 +50,8 @@ struct ExpressionResult {
 enum ResultContainer {
     Register,
     FloatRegister,
-    Flag(Flag)
+    Flag(Flag),
+    LValue(Box<LValue>)
 }
 
 #[derive(Debug)]
@@ -48,20 +61,29 @@ enum Flag {
     SMALLER
 }
 
+#[derive(Debug)]
+enum LValue {
+    Variable(String),
+    ArrayElement { identifier: String, offset: Box<ResultContainer> }
+}
+
 fn can_increment(data_type: &DataType) -> bool {
     match data_type {
         DataType::Int | DataType::Char | DataType::Pointer(_) => true,
-        DataType::Array { data_type: _, size: _ } | DataType::Boolean | DataType::Void | DataType::Float => false
+        DataType::Array { data_type: _, size: _ } | DataType::Boolean | DataType::Void | DataType::Float | DataType::Struct(_) => false
     }
 }
 
-pub fn sizeof(data_type: &DataType) -> i32 {
+fn sizeof(data_type: &DataType, compilation_state: &CompilationState) -> i32 {
     match data_type {
         DataType::Int | DataType::Pointer { .. } => 8,
         DataType::Float => 4,
         DataType::Char | DataType::Boolean => 1,
         DataType::Array { data_type: _, size: _ } => todo!(),
-        DataType::Void => panic!("sizeof(void) is invalid!")
+        DataType::Void => panic!("sizeof(void) is invalid!"),
+        DataType::Struct(identifier) => {
+            compilation_state.struct_types.get(identifier).expect("Struct type \"{}\" is missing!").size
+        }
     }
 }
 
@@ -71,7 +93,8 @@ pub fn sizeofword(data_type: &DataType) -> &str {
         DataType::Float => "DWORD",
         DataType::Char | DataType::Boolean => "BYTE",
         DataType::Array { data_type, size: _ } => sizeofword(data_type),
-        DataType::Void => panic!("sizeofword(void) is invalid!")
+        DataType::Void => panic!("sizeofword(void) is invalid!"),
+        DataType::Struct(_) => panic!("sizeofword(struct) is invalid!")
     }
 }
 
@@ -95,7 +118,7 @@ pub fn reg_from_size(size: i32, reg: &str) -> &'static str {
     }
 }
 
-fn get_function<'a>(compilation_state: &'a mut CompilationState, identifier: &str) -> Option<&'a FunctionPrototype> {
+fn get_function<'a>(compilation_state: &'a CompilationState, identifier: &str) -> Option<&'a FunctionPrototype> {
     if let Some(function) = compilation_state.parsed_unit.functions.iter().find(|f| f.prototype.name.eq(identifier)) {
         Some(&function.prototype)
     } else {
@@ -148,7 +171,7 @@ fn compile_function_call(compilation_state: &mut CompilationState, state: &mut S
                 if let DataType::Array { data_type: _, size: _ } = &variable.data_type {
                     instruction = "lea";
                     register = "rax";
-                } else if sizeof(&variable.data_type) == 8 {
+                } else if sizeof(&variable.data_type, &compilation_state) == 8 {
                     instruction = "mov";
                     register = "rax";
                 } else {
@@ -220,8 +243,22 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
         string_constants: HashMap::new(),
         float_constants: HashMap::new(),
         unique_label_id: 0,
-        parsed_unit
+        parsed_unit,
+        struct_types: HashMap::new()
     };
+
+    for struct_declaration in parsed_unit.struct_declarations.iter() {
+        let mut members: Vec<StructMemberWithOffset> = Vec::new();
+        let mut size = 0;
+
+        for member in struct_declaration.members.iter() {
+            let member_size = sizeof(&member.data_type, &compilation_state);
+            size = ((size + member_size - 1) / member_size) * member_size + member_size;
+            members.push(StructMemberWithOffset { member: member.clone(), offset: size });
+        }
+
+        compilation_state.struct_types.insert(struct_declaration.identifier.clone(), StructType { members, size });
+    }
 
     for function_declaration in parsed_unit.function_declarations.iter() {
         compilation_state.assembly.push_str(&format!("extern {}\n", function_declaration.name));
@@ -284,15 +321,15 @@ fn compile_scope(state: &mut ScopeState, compilation_state: &mut CompilationStat
         match statement {
             Statement::VariableDefinition { identifier, expression: expression_opt, data_type } => {
                 let size = if let DataType::Array { data_type, size } = data_type {
-                    sizeof(data_type) * size
+                    sizeof(data_type, compilation_state) * size
                 } else {
-                    sizeof(data_type)
+                    sizeof(data_type, compilation_state)
                 };
 
                 state.stack_size_current = ((state.stack_size_current + size - 1) / size) * size + size;
 
                 if let Some(expression) = expression_opt {
-                    let result = compile_expression(state, compilation_state, &expression);
+                    let result = compile_expression(state, compilation_state, &expression, false);
                     if result.data_type != *data_type {
                         panic!("Variable {} doesn't have the same type as the expression!", identifier);
                     }
@@ -307,24 +344,25 @@ fn compile_scope(state: &mut ScopeState, compilation_state: &mut CompilationStat
                             let set_instruction = set_instruction_from_flag(&flag);
                             let reg = reg_from_size(size, "rax");
                             state.assembly.push_str(&format!("{} {}\nmov {} [rbp - {}], {}\n", set_instruction, reg, sizeofword(data_type), state.stack_size_current, reg));
-                        }
+                        },
+                        ResultContainer::LValue(_) => panic!("Expression returned an lvalue!")
                     }
                 }
                 state.variables.push(Variable { identifier: identifier.clone(), stack_location: state.stack_size_current, data_type: data_type.clone() });
-            },
+            }, /*
             Statement::VariableAssigment { identifier, expression } => {
                 let result = compile_expression(state, compilation_state, &expression);
-                let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier)).expect(&format!("Undeclared variable: \"{}\"", identifier));
+                let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier.get(0).expect("Expected identifier"))).expect(&format!("Undeclared variable: \"{}\"", identifier.get(0).unwrap()));
                 if result.data_type != variable.data_type {
                     panic!("Variable doesn't have the same type as the expression!");
                 }
-                let size = sizeof(&variable.data_type);
+                let size = sizeof(&variable.data_type, compilation_state);
                 match result.result_container {
                     ResultContainer::Register => {
                         state.assembly.push_str(&format!("mov {} [rbp - {}], {}\n", sizeofword(&variable.data_type), variable.stack_location, reg_from_size(size, "rax")));
                     },
                     ResultContainer::FloatRegister => {
-                        state.assembly.push_str(&format!("mvss {} [rbp - {}], xmm0\n", sizeofword(&variable.data_type), variable.stack_location));
+                        state.assembly.push_str(&format!("movss {} [rbp - {}], xmm0\n", sizeofword(&variable.data_type), variable.stack_location));
                     },
                     ResultContainer::Flag(flag) => {
                         let set_instruction = set_instruction_from_flag(&flag);
@@ -332,24 +370,24 @@ fn compile_scope(state: &mut ScopeState, compilation_state: &mut CompilationStat
                         state.assembly.push_str(&format!("{} {}\nmov {} [rbp - {}], {}\n", set_instruction, reg, sizeofword(&variable.data_type), variable.stack_location, reg));
                     }
                 }
-            },
+            }, */
             Statement::Return(expression) => {
-                let result = compile_expression(state, compilation_state, expression);
+                let result = compile_expression(state, compilation_state, expression, false);
                 
                 if result.data_type != state.current_function.prototype.return_type {
                     panic!("Trying to return a different data type than in the function declaration!");
                 }
 
                 state.assembly.push_str(&format!("jmp .{}.end\n", state.current_function.prototype.name));
-            },
+            }, /*
             Statement::ArrayElementAssigment { identifier, element, expression } => {
                 let element_result = compile_expression(state, compilation_state, &element);
                 if element_result.data_type != DataType::Int {
                     panic!("Array index must be an integer!");
                 }
-                let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier)).expect(&format!("Undeclared variable: \"{}\"", identifier));
+                let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier.get(0).expect("Identifier expected"))).expect(&format!("Undeclared variable: \"{}\"", identifier.get(0).unwrap()));
                 if let DataType::Array { data_type, size: _size } = variable.data_type.clone() {
-                    let size = sizeof(&data_type);
+                    let size = sizeof(&data_type, compilation_state);
                     let stack_location = variable.stack_location.clone();
                     state.assembly.push_str("push rax\n");
                     let result = compile_expression(state, compilation_state, expression);
@@ -358,28 +396,28 @@ fn compile_scope(state: &mut ScopeState, compilation_state: &mut CompilationStat
                     }
                     state.assembly.push_str(&format!("pop rbx\nmov {} [rbp - {} + rbx * {}], {}\n", sizeofword(&data_type), stack_location, size, reg_from_size(size, "rax")));
                 } else {
-                    panic!("{} isn't an array!", identifier);
+                    panic!("{} isn't an array!", identifier.get(0).unwrap());
                 }
-            },
+            }, */
             Statement::Increment(identifier) => {
-                let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier)).expect(&format!("Undeclared variable: \"{}\"", identifier));
+                let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier.get(0).expect("Identifier expected"))).expect(&format!("Undeclared variable: \"{}\"", identifier.get(0).unwrap()));
                 if !can_increment(&variable.data_type) {
                     panic!("Cannot increment the variable \"{}\"", &variable.identifier);
                 }
                 state.assembly.push_str(&format!("inc {} [rbp - {}]\n", sizeofword(&variable.data_type), variable.stack_location));
             },
             Statement::Decrement(identifier) => {
-                let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier)).expect(&format!("Undeclared variable: \"{}\"", identifier));
+                let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier.get(0).expect("Identifier expected"))).expect(&format!("Undeclared variable: \"{}\"", identifier.get(0).unwrap()));
                 if !can_increment(&variable.data_type) {
                     panic!("Cannot decrement the variable \"{}\"", &variable.identifier);
                 }
                 state.assembly.push_str(&format!("dec {} [rbp - {}]\n", sizeofword(&variable.data_type), variable.stack_location));
-            },
+            }, /*
             Statement::FunctionCall(function_call) => {
                 let _ = compile_function_call(compilation_state, state, function_call);
-            },
+            }, */
             Statement::If { expression, scope, else_scope } => {
-                let result = compile_expression(state, compilation_state, expression);
+                let result = compile_expression(state, compilation_state, expression, false);
                 if result.data_type != DataType::Boolean {
                     panic!("If statement condition has to be a boolean!");
                 }
@@ -430,6 +468,9 @@ fn compile_scope(state: &mut ScopeState, compilation_state: &mut CompilationStat
                 } else {
                     todo!();
                 }
+            },
+            Statement::Expression(expression) => {
+                let _ = compile_expression(state, compilation_state, expression, false);
             }
         }
     }
@@ -452,50 +493,34 @@ fn jump_instruction_from_negated_flag(flag: &Flag) -> &str {
     }
 }
 
-fn compile_expression(state: &mut ScopeState, compilation_state: &mut CompilationState, expression: &Expression) -> ExpressionResult {
+fn compile_expression(state: & mut ScopeState, compilation_state: &mut CompilationState, expression: &Expression, lvalue: bool) -> ExpressionResult {
     match expression {
         Expression::IntLiteral(value) => {
+            if lvalue {
+                panic!("An int literal cannot be an lvalue!");
+            }
             state.assembly.push_str(&format!("mov rax, {}\n", value));
             ExpressionResult { data_type: DataType::Int, result_container: ResultContainer::Register }
         },
         Expression::CharacterLiteral(c) => {
+            if lvalue {
+                panic!("A char literal cannot be an lvalue!");
+            }
             state.assembly.push_str(&format!("mov rax, '{}'\n", c));
             ExpressionResult { data_type: DataType::Char, result_container: ResultContainer::Register }
         },
         Expression::Identifier(identifier) => {
-            let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier)).expect(&format!("Undeclared variable: \"{}\"", identifier));
-            let instruction;
-            let register;
-            if is_float(&variable.data_type) {
-                instruction = "movss";
-                register = "xmm0";
+            let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier.get(0).expect("Identifier expected"))).expect(&format!("Undeclared variable: \"{}\"", identifier.get(0).unwrap()));
+            if lvalue {
+                ExpressionResult { data_type: variable.data_type.clone(), result_container: ResultContainer::LValue(Box::new(LValue::Variable(identifier.get(0).unwrap().clone()))) }
             } else {
-                if sizeof(&variable.data_type) == 8 {
-                    instruction = "mov";
-                    register = "rax";
-                } else {
-                    instruction = "movzx";
-                    register = "eax";
-                }
-            }
-            state.assembly.push_str(&format!("{} {}, {} [rbp - {}]\n", instruction, register, sizeofword(&variable.data_type), variable.stack_location));
-            ExpressionResult { data_type: variable.data_type.clone(), result_container: ResultContainer::Register }
-        },
-        Expression::AccessArrayElement { identifier, element } => {
-            let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier)).expect(&format!("Undeclared variable: \"{}\"", identifier));
-            if let DataType::Array { data_type, size: _ } = variable.data_type.clone() {
-                let stack_location = variable.stack_location.clone();
-                let result = compile_expression(state, compilation_state, element);
-                if result.data_type != DataType::Int {
-                    panic!("Array index must be an integer!");
-                }
                 let instruction;
                 let register;
-                if is_float(&data_type) {
+                if is_float(&variable.data_type) {
                     instruction = "movss";
                     register = "xmm0";
                 } else {
-                    if sizeof(&data_type) == 8 {
+                    if sizeof(&variable.data_type, compilation_state) == 8 {
                         instruction = "mov";
                         register = "rax";
                     } else {
@@ -503,14 +528,48 @@ fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compilatio
                         register = "eax";
                     }
                 }
-                state.assembly.push_str(&format!("{} {}, {} [rbp - {} + rax]\n", instruction, register, sizeofword(&data_type), stack_location));
-                ExpressionResult { data_type: *data_type, result_container: ResultContainer::Register }
+                state.assembly.push_str(&format!("{} {}, {} [rbp - {}]\n", instruction, register, sizeofword(&variable.data_type), variable.stack_location));
+                ExpressionResult { data_type: variable.data_type.clone(), result_container: ResultContainer::Register }
+            }
+        },
+        Expression::ArraySubscript { identifier, element } => {
+            let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier.get(0).expect("Identifier expected"))).expect(&format!("Undeclared variable: \"{}\"", identifier.get(0).unwrap()));
+            if let DataType::Array { data_type, size: _ } = variable.data_type.clone() {
+                let stack_location = variable.stack_location.clone();
+                let result = compile_expression(state, compilation_state, element, false);
+                if result.data_type != DataType::Int {
+                    panic!("Array index must be an integer!");
+                }
+                if lvalue {
+                    ExpressionResult { data_type: *data_type, result_container: ResultContainer::LValue(Box::new(LValue::ArrayElement { identifier: identifier.get(0).unwrap().clone(), offset: Box::new(result.result_container) })) }
+                } else {
+                    let instruction;
+                    let register;
+                    if is_float(&data_type) {
+                        instruction = "movss";
+                        register = "xmm0";
+                    } else {
+                        if sizeof(&data_type, compilation_state) == 8 {
+                            instruction = "mov";
+                            register = "rax";
+                        } else {
+                            instruction = "movzx";
+                            register = "eax";
+                        }
+                    }
+                    state.assembly.push_str(&format!("{} {}, {} [rbpl- {} + rax]\n", instruction, register, sizeofword(&data_type), stack_location));
+                    ExpressionResult { data_type: *data_type, result_container: ResultContainer::Register }
+                }
             } else {
-                panic!("{} is not an array type!", identifier);
+                panic!("{} is not an array type!", identifier.get(0).unwrap());
             }
         },
         Expression::ArithmeticExpression { left, right, operator } => {
-            let right_result = compile_expression(state, compilation_state, right);
+            if lvalue {
+                panic!("An arithmetic expression cannot be an lvalue!");
+            }
+
+            let right_result = compile_expression(state, compilation_state, right, false);
             match right_result.data_type {
                 DataType::Int => {
                     state.assembly.push_str("push rax\n");
@@ -520,7 +579,7 @@ fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compilatio
                 },
                 _ => panic!("Cannot do an arithmetic operation!")
             }
-            let left_result = compile_expression(state, compilation_state, left);
+            let left_result = compile_expression(state, compilation_state, left, false);
 
             if !left_result.data_type.eq(&right_result.data_type) {
                 panic!("Cannot do arithmetic operations on values of different data types!");
@@ -549,13 +608,17 @@ fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compilatio
             }
         },
         Expression::ComparisonExpression { left, right, operator } => {
-            let right_result = compile_expression(state, compilation_state, right);
+            if lvalue {
+                panic!("A comparison expression cannot be an lvalue!");
+            }
+
+            let right_result = compile_expression(state, compilation_state, right, false);
             state.assembly.push_str("push rax\n");
-            let left_result = compile_expression(state, compilation_state, left);
+            let left_result = compile_expression(state, compilation_state, left, false);
             if right_result.data_type != left_result.data_type {
                 panic!("Cannot compare different data types!");
             }
-            let size = sizeof(&left_result.data_type);
+            let size = sizeof(&left_result.data_type, compilation_state);
             state.assembly.push_str(&format!("pop rbx\n cmp {}, {}\n", reg_from_size(size, "rax"), reg_from_size(size, "rbx")));
 
             //todo load the reslts into registers to compare if they happen to be booleans
@@ -567,7 +630,7 @@ fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compilatio
             }
         },
         Expression::Dereference(expression) => {
-            let result = compile_expression(state, compilation_state, expression);
+            let result = compile_expression(state, compilation_state, expression, false);
             if let DataType::Pointer(data_type) = result.data_type {
                 state.assembly.push_str("mov rax, QWORD [rax]\n");
                 ExpressionResult { data_type: *data_type, result_container: ResultContainer::Register }
@@ -575,8 +638,8 @@ fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compilatio
                 panic!("Cannot dereference a non pointer!");
             }
         },
-        Expression::Reference(identifier) => {
-            let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier)).expect(&format!("Undeclared variable: \"{}\"", identifier));
+        Expression::AddressOf(identifier) => {
+            let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier.get(0).expect("Identifier expected"))).expect(&format!("Undeclared variable: \"{}\"", identifier.get(0).unwrap()));
             state.assembly.push_str(&format!("lea rax, [rbp - {}]\n", variable.stack_location));
             ExpressionResult { data_type: DataType::Pointer(Box::new(variable.data_type.clone())), result_container: ResultContainer::Register }
         },
@@ -592,13 +655,25 @@ fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compilatio
             ExpressionResult { data_type: DataType::Pointer(Box::new(DataType::Char)), result_container: ResultContainer::Register }
         },
         Expression::FunctionCall(function_call) => {
+            if lvalue {
+                panic!("A function call cannot be an lvalue!");
+            }
+
             compile_function_call(compilation_state, state, function_call)
         },
         Expression::BoolLiteral(value) => {
+            if lvalue {
+                panic!("A bool literal cannot be an lvalue!");
+            }
+
             state.assembly.push_str(&format!("mov rax, {}\n", *value as i32));
             ExpressionResult { data_type: DataType::Boolean, result_container: ResultContainer::Register }
         },
         Expression::FloatLiteral(value) => {
+            if lvalue {
+                panic!("A float literal cannot be an lvalue!");
+            }
+
             let id : usize;
             if compilation_state.float_constants.contains_key(value) {
                 id = *compilation_state.float_constants.get(value).expect("Missing string in the float_constants hash map. Should never happen.");
@@ -608,6 +683,80 @@ fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compilatio
             }
             state.assembly.push_str(&format!("movss xmm0, DWORD [.Float{}]\n", id));
             ExpressionResult { data_type: DataType::Float, result_container: ResultContainer::FloatRegister }
+        }
+        Expression::Assigment { left, right } => {
+            let right_result = compile_expression(state, compilation_state, right, false);
+            if is_float(&right_result.data_type) {
+                state.assembly.push_str("movd eax, xmm0\npush rax\n");
+            } else {
+                state.assembly.push_str("push rax\n");
+            }
+
+            let left_result = compile_expression(state, compilation_state, left, true);
+
+            if right_result.data_type != left_result.data_type {
+                panic!("Cannot assing value of a different data type!");
+            }
+
+            if let ExpressionResult { data_type, result_container: ResultContainer::LValue(lvalue) } = left_result {
+                match *lvalue {
+                    LValue::Variable(identifier) => {
+                        let variable = state.variables.iter().rev().find(|var| var.identifier.eq(&identifier)).expect(&format!("Undeclared variable: \"{}\"", &identifier));
+                        if data_type != variable.data_type {
+                            panic!("Cannot assing value of a different data type!");
+                        }
+
+                        let size = sizeof(&data_type, compilation_state);
+
+                        match right_result.result_container {
+                            ResultContainer::Register => {
+                                state.assembly.push_str(&format!("pop rax\nmov {} [rbp - {}], {}\n", sizeofword(&variable.data_type), variable.stack_location, reg_from_size(size, "rax")));
+                            },
+                            ResultContainer::FloatRegister => {
+                                state.assembly.push_str(&format!("pop rbx\nmovd xmm0, eax\nmovss {} [rbp - {}], xmm0\n", sizeofword(&variable.data_type), variable.stack_location));
+                            },
+                            ResultContainer::Flag(ref flag) => {
+                                let set_instruction = set_instruction_from_flag(&flag);
+                                let reg = reg_from_size(size, "rax");
+                                state.assembly.push_str(&format!("{} {}\nmov {} [rbp - {}], {}\n", set_instruction, reg, sizeofword(&variable.data_type), variable.stack_location, reg));
+                            },
+                            ResultContainer::LValue(_) => panic!("Trying to use lvalue as an rvalue!")
+                        }
+
+                        right_result
+                    },
+                    LValue::ArrayElement { identifier, offset } => {
+                        let variable = state.variables.iter().rev().find(|var| var.identifier.eq(&identifier)).expect(&format!("Undeclared variable: \"{}\"", &identifier));
+
+                        if let DataType::Array { data_type, size: _size } = variable.data_type.clone() {
+
+                            if *data_type != variable.data_type {
+                                panic!("Cannot assing value of a different data type!");
+                            }
+
+                            let size = sizeof(&data_type, compilation_state);
+                            let stack_location = variable.stack_location.clone();
+                            
+                            if let ResultContainer::Register = *offset {
+                                if is_float(&data_type) {
+                                    state.assembly.push_str(&format!("pop rbx\nmovd xmm0, ebx\nmov {} [rbp - {} + rax * {}], {}\n", sizeofword(&data_type), stack_location, size, reg_from_size(size, "rax")));
+                                } else {
+                                    state.assembly.push_str(&format!("pop rbx\nmov {} [rbp - {} + rax * {}], {}\n", sizeofword(&data_type), stack_location, size, reg_from_size(size, "rax")));
+                                }
+                            } else {
+                                panic!();
+                            }
+
+                        } else {
+                            panic!("{} isn't an array!", identifier);
+                        }
+
+                        right_result
+                    }
+                }
+            } else {
+                panic!("Trying to assign value to rvalue!");
+            }
         }
     }
 }

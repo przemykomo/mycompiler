@@ -25,10 +25,10 @@ fn main() {
     //println!("{}", contents);
 
     let tokens = tokenize(&contents);
-    //dbg!(&tokens);
+    dbg!(&tokens);
 
     let parsed_unit = parse(&tokens);
-    //dbg!(&parsed_unit);
+    dbg!(&parsed_unit);
 
     let assembly = compile_to_assembly(&parsed_unit);
     //dbg!(&assembly);

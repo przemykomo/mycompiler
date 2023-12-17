@@ -8,6 +8,7 @@ pub enum Token {
     DataType(DataType),
     Identifier(String),
     EqualSign,
+    CompareEqual,
     PlusSign,
     MultiplySign,
     MinusSign,
@@ -41,7 +42,8 @@ pub enum DataType {
     Pointer(Box<DataType>),
     Boolean,
     Void,
-    Float
+    Float,
+    Struct(String)
 }
 
 pub fn tokenize(contents: &str) -> Vec<Token> {
@@ -145,7 +147,14 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
             tokens.push(
                     match c {
                         ';' => Token::Semicolon,
-                        '=' => Token::EqualSign,
+                        '=' => {
+                            if let Some('=') = iter.peek() {
+                                iter.next();
+                                Token::CompareEqual
+                            } else {
+                                Token::EqualSign
+                            }
+                        },
                         '+' => Token::PlusSign,
                         '*' => Token::MultiplySign,
                         '/' => Token::DivisionSign,

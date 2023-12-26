@@ -51,7 +51,8 @@ enum ResultContainer {
     Register,
     FloatRegister,
     Flag(Flag),
-    LValue(Box<LValue>)
+    LValue(Box<LValue>),
+    Value(i32)
 }
 
 #[derive(Debug)]
@@ -64,7 +65,7 @@ enum Flag {
 #[derive(Debug)]
 enum LValue {
     Variable(String),
-    ArrayElement { identifier: String, offset: Box<ResultContainer> }
+    VariableWithOffset { identifier: String, offset: Box<ResultContainer> }
 }
 
 fn can_increment(data_type: &DataType) -> bool {
@@ -345,7 +346,8 @@ fn compile_scope(state: &mut ScopeState, compilation_state: &mut CompilationStat
                             let reg = reg_from_size(size, "rax");
                             state.assembly.push_str(&format!("{} {}\nmov {} [rbp - {}], {}\n", set_instruction, reg, sizeofword(data_type), state.stack_size_current, reg));
                         },
-                        ResultContainer::LValue(_) => panic!("Expression returned an lvalue!")
+                        ResultContainer::LValue(_) => panic!("Expression returned an lvalue!"),
+                        ResultContainer::Value(_) => todo!(),
                     }
                 }
                 state.variables.push(Variable { identifier: identifier.clone(), stack_location: state.stack_size_current, data_type: data_type.clone() });
@@ -400,14 +402,14 @@ fn compile_scope(state: &mut ScopeState, compilation_state: &mut CompilationStat
                 }
             }, */
             Statement::Increment(identifier) => {
-                let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier.get(0).expect("Identifier expected"))).expect(&format!("Undeclared variable: \"{}\"", identifier.get(0).unwrap()));
+                let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier)).expect(&format!("Undeclared variable: \"{}\"", identifier));
                 if !can_increment(&variable.data_type) {
                     panic!("Cannot increment the variable \"{}\"", &variable.identifier);
                 }
                 state.assembly.push_str(&format!("inc {} [rbp - {}]\n", sizeofword(&variable.data_type), variable.stack_location));
             },
             Statement::Decrement(identifier) => {
-                let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier.get(0).expect("Identifier expected"))).expect(&format!("Undeclared variable: \"{}\"", identifier.get(0).unwrap()));
+                let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier)).expect(&format!("Undeclared variable: \"{}\"", identifier));
                 if !can_increment(&variable.data_type) {
                     panic!("Cannot decrement the variable \"{}\"", &variable.identifier);
                 }
@@ -510,9 +512,9 @@ fn compile_expression(state: & mut ScopeState, compilation_state: &mut Compilati
             ExpressionResult { data_type: DataType::Char, result_container: ResultContainer::Register }
         },
         Expression::Identifier(identifier) => {
-            let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier.get(0).expect("Identifier expected"))).expect(&format!("Undeclared variable: \"{}\"", identifier.get(0).unwrap()));
+            let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier)).expect(&format!("Undeclared variable: \"{}\"", identifier));
             if lvalue {
-                ExpressionResult { data_type: variable.data_type.clone(), result_container: ResultContainer::LValue(Box::new(LValue::Variable(identifier.get(0).unwrap().clone()))) }
+                ExpressionResult { data_type: variable.data_type.clone(), result_container: ResultContainer::LValue(Box::new(LValue::Variable(identifier.clone()))) }
             } else {
                 let instruction;
                 let register;
@@ -533,7 +535,7 @@ fn compile_expression(state: & mut ScopeState, compilation_state: &mut Compilati
             }
         },
         Expression::ArraySubscript { identifier, element } => {
-            let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier.get(0).expect("Identifier expected"))).expect(&format!("Undeclared variable: \"{}\"", identifier.get(0).unwrap()));
+            let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier)).expect(&format!("Undeclared variable: \"{}\"", identifier));
             if let DataType::Array { data_type, size: _ } = variable.data_type.clone() {
                 let stack_location = variable.stack_location.clone();
                 let result = compile_expression(state, compilation_state, element, false);
@@ -541,7 +543,7 @@ fn compile_expression(state: & mut ScopeState, compilation_state: &mut Compilati
                     panic!("Array index must be an integer!");
                 }
                 if lvalue {
-                    ExpressionResult { data_type: *data_type, result_container: ResultContainer::LValue(Box::new(LValue::ArrayElement { identifier: identifier.get(0).unwrap().clone(), offset: Box::new(result.result_container) })) }
+                    ExpressionResult { data_type: *data_type, result_container: ResultContainer::LValue(Box::new(LValue::VariableWithOffset { identifier: identifier.clone(), offset: Box::new(result.result_container) })) }
                 } else {
                     let instruction;
                     let register;
@@ -561,7 +563,7 @@ fn compile_expression(state: & mut ScopeState, compilation_state: &mut Compilati
                     ExpressionResult { data_type: *data_type, result_container: ResultContainer::Register }
                 }
             } else {
-                panic!("{} is not an array type!", identifier.get(0).unwrap());
+                panic!("{} is not an array type!", identifier);
             }
         },
         Expression::ArithmeticExpression { left, right, operator } => {
@@ -638,8 +640,28 @@ fn compile_expression(state: & mut ScopeState, compilation_state: &mut Compilati
                 panic!("Cannot dereference a non pointer!");
             }
         },
-        Expression::AddressOf(identifier) => {
-            let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier.get(0).expect("Identifier expected"))).expect(&format!("Undeclared variable: \"{}\"", identifier.get(0).unwrap()));
+        Expression::AddressOf(expression) => {
+            let result = compile_expression(state, compilation_state, expression, true);
+
+            if let ResultContainer::LValue(lvalue) = result.result_container {
+                let (variable, mut offset) = if let ResultContainer::LValue(lvalue_box) = left.result_container {
+                    match *lvalue_box {
+                        LValue::Variable(identifier) => (identifier, 0),
+                        LValue::VariableWithOffset { identifier, offset } => {
+                            if let ResultContainer::Value(offset) = *offset {
+                                (identifier, offset)
+                            } else {
+                                panic!("Only compile time struct offsets are supported right now!");
+                            }
+                        }
+                    }
+                } else {
+                    panic!();
+                };
+            } else {
+                panic!("Cannot take address of an rvalue!");
+            }
+            let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier)).expect(&format!("Undeclared variable: \"{}\"", identifier));
             state.assembly.push_str(&format!("lea rax, [rbp - {}]\n", variable.stack_location));
             ExpressionResult { data_type: DataType::Pointer(Box::new(variable.data_type.clone())), result_container: ResultContainer::Register }
         },
@@ -725,7 +747,7 @@ fn compile_expression(state: & mut ScopeState, compilation_state: &mut Compilati
 
                         right_result
                     },
-                    LValue::ArrayElement { identifier, offset } => {
+                    LValue::VariableWithOffset { identifier, offset } => {
                         let variable = state.variables.iter().rev().find(|var| var.identifier.eq(&identifier)).expect(&format!("Undeclared variable: \"{}\"", &identifier));
 
                         if let DataType::Array { data_type, size: _size } = variable.data_type.clone() {
@@ -756,6 +778,41 @@ fn compile_expression(state: & mut ScopeState, compilation_state: &mut Compilati
                 }
             } else {
                 panic!("Trying to assign value to rvalue!");
+            }
+        }
+        Expression::MemberAccess { left, right } => {
+            let left = compile_expression(state, compilation_state, left, true);
+
+            if let DataType::Struct(left_identifier) = left.data_type {
+                let (variable, mut offset) = if let ResultContainer::LValue(lvalue_box) = left.result_container {
+                    match *lvalue_box {
+                        LValue::Variable(identifier) => (identifier, 0),
+                        LValue::VariableWithOffset { identifier, offset } => {
+                            if let ResultContainer::Value(offset) = *offset {
+                                (identifier, offset)
+                            } else {
+                                panic!("Only compile time struct offsets are supported right now!");
+                            }
+                        }
+                    }
+                } else {
+                    panic!();
+                };
+
+                let struct_type = compilation_state.struct_types.get(&left_identifier).expect("Expected struct to exist.");
+
+                match **right {
+                    Expression::Identifier(identifier) => {
+                        let member = struct_type.members.iter().find(|member| member.member.identifier.eq(&identifier)).expect("Expected member of struct to exist.");
+                        ExpressionResult { data_type: member.member.data_type, result_container: ResultContainer::LValue(Box::new(LValue::VariableWithOffset { identifier: variable, offset: Box::new(ResultContainer::Value(offset + member.offset)) })) }
+                    },
+                    Expression::ArraySubscript { identifier, element } => todo!(),
+                    Expression::FunctionCall(_) => todo!(),
+                    _ => panic!("Invalid member access expression!")
+                }
+                
+            } else {
+                panic!("Member access operator used on a non-struct variable!");
             }
         }
     }

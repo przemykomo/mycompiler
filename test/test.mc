@@ -1,9 +1,17 @@
-void other(float a);
+void other(int a);
+
+struct potega {
+    int a,
+    int b
+}
 
 public int main() {
-    float a = 20.0;
-    a = a / 2.3 + 5.0 * 12.87 - 53.88;
-    other(a);
+    potega test;
+    test.a = 1;
+    test.b = 2;
+    test.a = test.b * 4;
+    int i = test.a + 3;
+    other(i);
 
     return 0;
 }

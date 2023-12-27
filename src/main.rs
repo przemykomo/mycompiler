@@ -25,7 +25,7 @@ fn main() {
     //println!("{}", contents);
 
     let tokens = tokenize(&contents);
-    dbg!(&tokens);
+    //dbg!(&tokens);
 
     let parsed_unit = parse(&tokens);
     dbg!(&parsed_unit);

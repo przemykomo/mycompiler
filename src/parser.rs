@@ -143,15 +143,20 @@ pub fn parse(tokens: &Vec<Token>) -> ParsedUnit {
             Token::Struct => {
                 if let Some((Token::Identifier(identifier), Token::CurlyBracketOpen)) = iter.next_tuple() {
                     let mut members : Vec<StructMember> = Vec::new();
-                    while let Some((Token::DataType(data_type), Token::Identifier(member_name))) = iter.next_tuple() {
+                    while let Some((Token::DataType(data_type), Token::Identifier(member_name))) = iter.clone().next_tuple() {
+                        dbg!(iter.next());
+                        dbg!(iter.next());
+
                         members.push(StructMember { identifier: member_name.clone(), data_type: data_type.clone() });
-                        let Some(Token::Coma) = iter.next() else {
-                            if let Some(Token::CurlyBracketClose) = iter.next() {
+                        match iter.next() {
+                            Some(Token::Coma) => {},
+                            Some(Token::CurlyBracketClose) => {
                                 break;
-                            } else {
-                                panic!("Expected a '}}' after last struct element!");
+                            },
+                            other => {
+                                panic!("Unexpected \'{:?}\'! Expected a '}}' after last struct element!", other);
                             }
-                        };
+                        }
                     }
 
                     parsed_unit.struct_declarations.push(StructDeclaration { identifier: identifier.clone(), members })
@@ -222,7 +227,7 @@ pub fn parse(tokens: &Vec<Token>) -> ParsedUnit {
     return parsed_unit;
 }
 
-fn variable_definition(iter: &mut Peekable<Iter<Token>>, abstract_syntax_tree: &mut Vec<Statement>, data_type: &DataType) {
+fn parse_variable_definition(iter: &mut Peekable<Iter<Token>>, abstract_syntax_tree: &mut Vec<Statement>, data_type: &DataType) {
     match iter.next() {
         Some(Token::Identifier(identifier)) => {
                 let my_expression: Option<Expression>;
@@ -233,15 +238,35 @@ fn variable_definition(iter: &mut Peekable<Iter<Token>>, abstract_syntax_tree: &
                     Some(Token::Semicolon) => {
                         my_expression = None;
                     },
-                    _ => {
-                        panic!("Syntax error.");
+                    token => {
+                        dbg!(abstract_syntax_tree);
+                        panic!("Unexpected token \'{:?}\'.", token);
                     }
             }
             abstract_syntax_tree.push(Statement::VariableDefinition { identifier: identifier.clone(), expression: my_expression, data_type: data_type.clone() });
         },
         token => {
-            dbg!(token);
-            panic!("Unexpected token!");
+            panic!("Unexpected token \'{:?}\'.", token);
+        }
+    }
+}
+
+fn parse_variable_definition_with_data_type(abstract_syntax_tree: &mut Vec<Statement>, data_type: &DataType, iter: &mut Peekable<Iter<Token>>) {
+    match iter.peek() {
+        Some(Token::SquareParenthesisOpen) => {
+            iter.next();
+            if let Some((Token::IntLiteral(size), Token::SquareParenthesisClose)) = iter.next_tuple() {
+                parse_variable_definition(iter, abstract_syntax_tree, &DataType::Array { data_type: Box::new(data_type.clone()), size: *size });
+            } else {
+                panic!("Expected an int literal in an array definition!");
+            }
+        },
+        Some(Token::MultiplySign) => {
+            iter.next();
+            parse_variable_definition(iter, abstract_syntax_tree, &DataType::Pointer(Box::new(data_type.clone())));
+        },
+        _ => {
+            parse_variable_definition(iter, abstract_syntax_tree, data_type);
         }
     }
 }
@@ -254,75 +279,18 @@ pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
         match token {
             Token::DataType(data_type) => {
                 iter.next();
-                match iter.peek() {
-                    Some(Token::SquareParenthesisOpen) => {
-                        iter.next();
-                        if let Some((Token::IntLiteral(size), Token::SquareParenthesisClose)) = iter.next_tuple() {
-                            variable_definition(iter, &mut abstract_syntax_tree, &DataType::Array { data_type: Box::new(data_type.clone()), size: *size });
-                        } else {
-                            panic!("Expected an int literal in an array definition!");
-                        }
-                    },
-                    Some(Token::MultiplySign) => {
-                        iter.next();
-                        variable_definition(iter, &mut abstract_syntax_tree, &DataType::Pointer(Box::new(data_type.clone())));
-                    },
-                    _ => {
-                        variable_definition(iter, &mut abstract_syntax_tree, data_type);
-                    }
+                parse_variable_definition_with_data_type(&mut abstract_syntax_tree, data_type, iter);
+            },
+            Token::Identifier(_struct_name) => {
+                let mut iter_clone = iter.clone();
+                dbg!(_struct_name);
+                if let Some((Token::Identifier(struct_name), Token::Identifier(_identifier))) = iter_clone.next_tuple() {
+                    dbg!(iter.next());
+                    parse_variable_definition_with_data_type(&mut abstract_syntax_tree, &DataType::Struct(struct_name.clone()), iter);
+                } else {
+                    abstract_syntax_tree.push(Statement::Expression(parse_expression(iter)));
                 }
             },
-            /*
-            Token::Identifier(first) => {
-                iter.next();
-                let identifier = parse_identifier(iter, first.clone());
-                dbg!(&identifier);
-                match iter.next() {
-                    Some(Token::PlusSign) => {
-                        if let Some(Token::PlusSign) = iter.next() {
-                            abstract_syntax_tree.push(Statement::Increment(identifier));
-                        } else {
-                            panic!();
-                        }
-                    },
-                    Some(Token::MinusSign) => {
-                        if let Some(Token::MinusSign) = iter.next() {
-                            abstract_syntax_tree.push(Statement::Decrement(identifier));
-                        } else {
-                            panic!();
-                        }
-                    },
-                    Some(Token::EqualSign) => {
-                        abstract_syntax_tree.push(Statement::VariableAssigment { identifier, expression: parse_expression(iter) });
-                    },
-                    Some(Token::ParenthesisOpen) => {
-                        let arguments = if let Some(Token::ParenthesisClose) = iter.peek() {
-                            Vec::new()
-                        } else {
-                            parse_arguments_passing(iter)
-                        };
-
-                        if let Some(Token::ParenthesisClose) = iter.next() {
-                            if identifier.len() == 1 {
-                                abstract_syntax_tree.push(Statement::FunctionCall(FunctionCall { identifier: first.clone(), arguments }));
-                            } else {
-                                panic!("Trying to use a struct member as a function name!\n");
-                            }
-                        }
-                    },
-                    Some(Token::SquareParenthesisOpen) => {
-                        let element = parse_expression(iter);
-                        if let Some((Token::SquareParenthesisClose, Token::EqualSign)) = iter.next_tuple() {
-                            let expression = parse_expression(iter);
-                            abstract_syntax_tree.push(Statement::ArrayElementAssigment { identifier, element, expression });
-                        }
-                    },
-                    other => {
-                        dbg!(other);
-                        panic!("Syntax error.");
-                    }
-                }
-            }, */
             Token::If => {
                 iter.next();
                 if let Some(Token::ParenthesisOpen) = iter.next() {

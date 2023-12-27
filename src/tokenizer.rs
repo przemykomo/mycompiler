@@ -82,7 +82,7 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
                     "return" => Token::Return,
                     "true" => Token::BoolLiteral(true),
                     "false" => Token::BoolLiteral(false),
-                    "struct" => Token::String,
+                    "struct" => Token::Struct,
                     _ => Token::Identifier(buffer)
                 });
         } else if c.is_ascii_digit() || c == '-' {

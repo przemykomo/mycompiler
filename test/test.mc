@@ -1,4 +1,7 @@
 void other(int a);
+int another(int a, int b) {
+    return a + b;
+}
 
 struct potega {
     int a,
@@ -6,12 +9,12 @@ struct potega {
 }
 
 public int main() {
-    potega test;
-    test.a = 1;
-    test.b = 2;
-    test.a = test.b * 4;
-    int i = test.a + 3;
-    other(i);
+
+    int a = 5;
+    int b = 10;
+    a = another(a, b);
+
+    other(a);
 
     return 0;
 }

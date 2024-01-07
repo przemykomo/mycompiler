@@ -61,7 +61,7 @@ pub enum Statement {
 #[derive(Debug)]
 pub struct FunctionCall {
     pub identifier: String,
-    pub arguments: Vec<String>
+    pub arguments: Vec<Expression>
 }
 
 #[derive(Debug)]
@@ -89,14 +89,22 @@ pub fn parse_arguments_declaration(iter: &mut Peekable<Iter<Token>>) -> Vec<Data
     let mut arguments = Vec::<DataType>::new();
 
     loop {
-        if let Some(Token::DataType(data_type)) = iter.next() {
-            if let Some(Token::Identifier(_)) = iter.next() {
-                arguments.push(data_type.clone());
-            } else {
-                panic!("Expected an identifier after a data type in the function");
-            }
-        } else {
-            panic!("Unexpected token in the function arguments")
+        match iter.next() {
+            Some(Token::DataType(data_type)) => {
+                if let Some(Token::Identifier(_)) = iter.next() {
+                    arguments.push(data_type.clone());
+                } else {
+                    panic!("Expected an identifier after a data type in the function");
+                }
+            },
+            Some(Token::Identifier(struct_name)) => {
+                if let Some(Token::Identifier(_)) = iter.next() {
+                    arguments.push(DataType::Struct(struct_name.clone()));
+                } else {
+                    panic!("Expected an identifier after a data type in the function");
+                }
+            },
+            _ => panic!("Unexpected token in the function arguments"),
         }
 
         if let Some(Token::Coma) = iter.peek() {
@@ -109,15 +117,11 @@ pub fn parse_arguments_declaration(iter: &mut Peekable<Iter<Token>>) -> Vec<Data
     return arguments;
 }
 
-pub fn parse_arguments_passing(iter: &mut Peekable<Iter<Token>>) -> Vec<String> {
-    let mut arguments = Vec::<String>::new();
+pub fn parse_arguments_passing(iter: &mut Peekable<Iter<Token>>) -> Vec<Expression> {
+    let mut arguments = Vec::<Expression>::new();
 
     loop {
-        if let Some(Token::Identifier(identifier)) = iter.next() {
-            arguments.push(identifier.clone());
-        } else {
-            panic!("Expected an identifier as a function parameter!");
-        }
+        arguments.push(parse_expression(iter));
 
         if let Some(Token::Coma) = iter.peek() {
             iter.next();
@@ -492,7 +496,7 @@ fn parse_atom(iter: &mut Peekable<Iter<Token>>) -> Expression {
                 };
                 
                 if let Some(Token::ParenthesisClose) = iter.next() {
-                    Expression::FunctionCall(FunctionCall { identifier: identifier.clone() , arguments })
+                    Expression::FunctionCall(FunctionCall { identifier: identifier.clone(), arguments })
                 } else {
                     panic!("Expected ')' at the end of function call.");
                 }

@@ -76,19 +76,19 @@ fn sizeof(data_type: &DataType, compilation_state: &CompilationState) -> i32 {
         DataType::Array { data_type: _, size: _ } => todo!(),
         DataType::Void => panic!("sizeof(void) is invalid!"),
         DataType::Struct(identifier) => {
-            compilation_state.struct_types.get(identifier).expect("Struct type \"{}\" is missing!").size
+            compilation_state.struct_types.get(identifier).expect("Struct type is missing!").size
         }
     }
 }
 
-pub fn sizeofword(data_type: &DataType) -> &str {
+pub fn word_from_type(data_type: &DataType) -> &str {
     match data_type {
         DataType::Int | DataType::Pointer { .. } => "QWORD",
         DataType::Float => "DWORD",
         DataType::Char | DataType::Boolean => "BYTE",
-        DataType::Array { data_type, size: _ } => sizeofword(data_type),
-        DataType::Void => panic!("sizeofword(void) is invalid!"),
-        DataType::Struct(_) => panic!("sizeofword(struct) is invalid!")
+        DataType::Array { data_type, size: _ } => word_from_type(data_type),
+        DataType::Void => panic!("word_from_type(void) is invalid!"),
+        DataType::Struct(_) => panic!("word_from_type(struct) is invalid!")
     }
 }
 
@@ -126,69 +126,80 @@ fn compile_function_call(compilation_state: &mut CompilationState, state: &mut S
             panic!("Passed wrong amoung of parameters to function \"{}\"", function.name);
         }
 
-        let mut arguments_to_append : String = String::new();
-        let mut floats_index : i64 = function.arguments.iter().filter(|data_type| is_float(data_type)).count() as i64;
-        let mut integer_index : i64 = function.arguments.len() as i64 - floats_index;
-        
-        floats_index -= 1;
-        integer_index -= 1;
+        let mut arguments_in_reg_asm : String = String::new();
+        let mut arguments_in_stack_asm : String = String::new();
+        let mut int_index : i32 = 0;
+        let mut float_index : i32 = 0;
+        let mut stack_size_for_args : i32 = 0;
 
-        for (i, argument) in function_call.arguments.iter().enumerate().rev() {
-            let variable = state.variables.iter().rev().find(|var| var.identifier.eq(argument)).expect(&format!("Undeclared variable: \"{}\"", argument));
-            if !variable.data_type.eq(function.arguments.get(i).expect("Already checked for a number of arguments, should never happen.")) {
+        for (i, argument) in function_call.arguments.iter().enumerate() {
+            let result = move_to_reg_if_needed(state, compile_expression(state, compilation_state, argument));
+
+            if !result.data_type.eq(function.arguments.get(i).expect("Already checked for a number of arguments, should never happen.")) {
                 panic!("Passed argument of a wrong type!");
             }
 
-            if is_float(&variable.data_type) {
-                if floats_index > 7 {
-                    arguments_to_append.push_str(&format!("movss xmm0, DWORD [rbp - {}]\npush xmm0\n", variable.stack_location));
+            if let DataType::Struct(struct_name) = result.data_type {
+                let struct_type = compilation_state.struct_types.get(&struct_name).expect("Struct type is missing!");
+                if let ResultContainer::IdentifierWithOffset { identifier, offset } = result.result_container {
+                    let variable = state.variables.iter().rev().find(|var| var.identifier.eq(&identifier)).expect(&format!("Undeclared variable: \"{}\"", identifier));
+                    arguments_in_stack_asm.push_str(&format!("sub rsp, {}", struct_type.size));
+                    stack_size_for_args += struct_type.size;
+                    let mut i = 0;
+                    while i < struct_type.size {
+                        match struct_type.size - i {
+                            0 => unreachable!(),
+                            1 => {
+                                arguments_in_stack_asm.push_str(&format!("movzx eax, BYTE [rbp - {}]\nmov BYTE [rsp + {}], al\n", variable.stack_location - offset, i));
+                                i += 1;
+                            },
+                            2 | 3 => {
+                                arguments_in_stack_asm.push_str(&format!("movzx eax, WORD [rbp - {}]\nmov WORD [rsp + {}], ax\n", variable.stack_location - offset, i));
+                                i += 2;
+                            },
+                            4..=7 => {
+                                arguments_in_stack_asm.push_str(&format!("mov eax, DWORD [rbp - {}]\nmov DWORD [rsp + {}], eax\n", variable.stack_location - offset, i));
+                                i += 4;
+                            },
+                            _ => {
+                                arguments_in_stack_asm.push_str(&format!("mov rax, QWORD [rbp - {}]\nmov QWORD [rsp + {}], rax\n", variable.stack_location - offset, i));
+                                i += 8;
+                            }
+                        }
+                    }
                 } else {
-                    let register = match floats_index {
-                        0 => "xmm0",
-                        1 => "xmm1",
-                        2 => "xmm2",
-                        3 => "xmm3",
-                        4 => "xmm4",
-                        5 => "xmm5",
-                        6 => "xmm6",
-                        7 => "xmm7",
-                        _ => unreachable!()
-                    };
-
-                    arguments_to_append.push_str(&format!("movss {}, DWORD [rbp - {}]\n", register, variable.stack_location));
+                    panic!();
                 }
-
-                floats_index -= 1;
             } else {
-                let instruction;
-                let register;
-                if let DataType::Array { data_type: _, size: _ } = &variable.data_type {
-                    instruction = "lea";
-                    register = "rax";
-                } else if sizeof(&variable.data_type, &compilation_state) == 8 {
-                    instruction = "mov";
-                    register = "rax";
-                } else {
-                    instruction = "movzx";
-                    register = "eax";
-                }
+                let size = sizeof(&result.data_type, compilation_state);
+                if is_float(&result.data_type) {
+                    if float_index > 7 {
+                        arguments_in_stack_asm.push_str(&format!("movss {} [rsp + %stack_size% - {}], xmm0\n", word_from_type(&result.data_type), stack_size_for_args));
+                        stack_size_for_args += size;
+                    } else if float_index > 0 {
+                        arguments_in_reg_asm.push_str(&format!("movd xmm{}, xmm0\n", float_index));
+                    }
 
-                if integer_index > 5 {
-                    arguments_to_append.push_str(&format!("{} {}, {} [rbp - {}]\npush rax\n", instruction, register, sizeofword(&variable.data_type), variable.stack_location));
+                    float_index += 1;
                 } else {
-                    let register = match integer_index {
-                        0 => "rdi",
-                        1 => "rsi",
-                        2 => "rax",
-                        3 => "rcx",
-                        4 => "r8",
-                        5 => "r9",
-                        _ => unreachable!()
-                    };
-                    arguments_to_append.push_str(&format!("{} {}, {} [rbp - {}]\n", instruction, register, sizeofword(&variable.data_type), variable.stack_location));
-                }
+                    if int_index > 5 {
+                        arguments_in_stack_asm.push_str(&format!("mov {} [rsp + %stack_size% - {}, {}", word_from_type(&result.data_type), stack_size_for_args, reg_from_size(size, "rax")));
+                        stack_size_for_args += size;
+                    } else {
+                        let register = match int_index {
+                            0 => "rdi",
+                            1 => "rsi",
+                            2 => "rdx",
+                            3 => "rcx",
+                            4 => "r8",
+                            5 => "r9",
+                            _ => unreachable!()
+                        };
+                        arguments_in_reg_asm.
+                    }
 
-                integer_index -= 1;
+                    integer_index -= 1;
+                }
             }
         }
 
@@ -217,6 +228,7 @@ fn compile_function_call(compilation_state: &mut CompilationState, state: &mut S
                                     pop rax\n", arguments_to_append, function_call.identifier);
         state.assembly.push_str(&to_append); */
         state.assembly.push_str(&format!("{}call {}\n", arguments_to_append, function_call.identifier));
+        arguments_in_stack_asm.push_str(&format!("add rsp, {}", stack_size_for_args));
         if is_float(&function.return_type) {
             return ExpressionResult { data_type: function.return_type.clone(), result_container: ResultContainer::FloatRegister };
         }
@@ -329,15 +341,15 @@ fn compile_scope(state: &mut ScopeState, compilation_state: &mut CompilationStat
                     }
                     match result.result_container {
                         ResultContainer::Register => {
-                            state.assembly.push_str(&format!("mov {} [rbp - {}], {}\n", sizeofword(data_type), state.stack_size_current, reg_from_size(size, "rax")));
+                            state.assembly.push_str(&format!("mov {} [rbp - {}], {}\n", word_from_type(data_type), state.stack_size_current, reg_from_size(size, "rax")));
                         },
                         ResultContainer::FloatRegister => {
-                            state.assembly.push_str(&format!("movss {} [rbp - {}], xmm0\n", sizeofword(data_type), state.stack_size_current));
+                            state.assembly.push_str(&format!("movss {} [rbp - {}], xmm0\n", word_from_type(data_type), state.stack_size_current));
                         },
                         ResultContainer::Flag(flag) => {
                             let set_instruction = set_instruction_from_flag(&flag);
                             let reg = reg_from_size(size, "rax");
-                            state.assembly.push_str(&format!("{} {}\nmov {} [rbp - {}], {}\n", set_instruction, reg, sizeofword(data_type), state.stack_size_current, reg));
+                            state.assembly.push_str(&format!("{} {}\nmov {} [rbp - {}], {}\n", set_instruction, reg, word_from_type(data_type), state.stack_size_current, reg));
                         },
                         ResultContainer::IdentifierWithOffset { identifier, offset } => {},
                     }
@@ -398,14 +410,14 @@ fn compile_scope(state: &mut ScopeState, compilation_state: &mut CompilationStat
                 if !can_increment(&variable.data_type) {
                     panic!("Cannot increment the variable \"{}\"", &variable.identifier);
                 }
-                state.assembly.push_str(&format!("inc {} [rbp - {}]\n", sizeofword(&variable.data_type), variable.stack_location));
+                state.assembly.push_str(&format!("inc {} [rbp - {}]\n", word_from_type(&variable.data_type), variable.stack_location));
             },
             Statement::Decrement(identifier) => {
                 let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier)).expect(&format!("Undeclared variable: \"{}\"", identifier));
                 if !can_increment(&variable.data_type) {
                     panic!("Cannot decrement the variable \"{}\"", &variable.identifier);
                 }
-                state.assembly.push_str(&format!("dec {} [rbp - {}]\n", sizeofword(&variable.data_type), variable.stack_location));
+                state.assembly.push_str(&format!("dec {} [rbp - {}]\n", word_from_type(&variable.data_type), variable.stack_location));
             }, /*
             Statement::FunctionCall(function_call) => {
                 let _ = compile_function_call(compilation_state, state, function_call);
@@ -491,19 +503,27 @@ fn move_to_reg_if_needed(state: &mut ScopeState, mut expression_result: Expressi
 
     match expression_result.result_container {
         ResultContainer::Register => return expression_result,
-        ResultContainer::FloatRegister => todo!(),
-        ResultContainer::Flag(_) => todo!(),
+        ResultContainer::FloatRegister => return expression_result,
+        ResultContainer::Flag(ref flag) => {
+            state.assembly.push_str(&format!("{} rax\n", set_instruction_from_flag(flag)));
+            expression_result.result_container = ResultContainer::Register;
+            return expression_result;
+        },
         ResultContainer::IdentifierWithOffset { identifier, offset } => {
             let variable = state.variables.iter().rev().find(|var| var.identifier.eq(&identifier)).expect(&format!("Undeclared variable: \"{}\"", identifier));
-            state.assembly.push_str(&format!("mov rax, [rbp - {}]\n", variable.stack_location - offset));
+            if let DataType::Array { data_type, size } = expression_result.data_type {
+                state.assembly.push_str(&format!("lea rax, [rbp - {}]\n", variable.stack_location - offset));
+                expression_result.data_type = DataType::Pointer(Box::new(*data_type.clone()));
+            } else {
+                state.assembly.push_str(&format!("mov rax, [rbp - {}]\n", variable.stack_location - offset));
+            }
+            expression_result.result_container = ResultContainer::Register;
+            return expression_result;
         },
     }
-
-    expression_result.result_container = ResultContainer::Register;
-    return expression_result;
 }
 
-fn compile_expression(state: & mut ScopeState, compilation_state: &mut CompilationState, expression: &Expression) -> ExpressionResult {
+fn compile_expression(state: &mut ScopeState, compilation_state: &mut CompilationState, expression: &Expression) -> ExpressionResult {
     match expression {
         Expression::IntLiteral(value) => {
             state.assembly.push_str(&format!("mov rax, {}\n", value));
@@ -705,21 +725,10 @@ fn compile_expression(state: & mut ScopeState, compilation_state: &mut Compilati
                 let size = sizeof(&data_type, compilation_state);
                 let stack_location = variable.stack_location.clone();
                 
-                /*
-                if let ResultContainer::Register = *offset {
-                    if is_float(&data_type) {
-                        state.assembly.push_str(&format!("pop rbx\nmovd xmm0, ebx\nmov {} [rbp - {} + rax * {}], {}\n", sizeofword(&data_type), stack_location, size, reg_from_size(size, "rax")));
-                    } else {
-                        state.assembly.push_str(&format!("pop rbx\nmov {} [rbp - {} + rax * {}], {}\n", sizeofword(&data_type), stack_location, size, reg_from_size(size, "rax")));
-                    }
-                } else {
-                    panic!();
-                }*/
-
                 if is_float(&data_type) {
-                    state.assembly.push_str(&format!("movd eax, xmm0\nmov {} [rbp - {}], {}\n", sizeofword(&data_type), stack_location - offset, reg_from_size(size, "rax")));
+                    state.assembly.push_str(&format!("movd eax, xmm0\nmov {} [rbp - {}], {}\n", word_from_type(&data_type), stack_location - offset, reg_from_size(size, "rax")));
                 } else {
-                    state.assembly.push_str(&format!("mov {} [rbp - {}], {}\n", sizeofword(&data_type), stack_location - offset, reg_from_size(size, "rax")));
+                    state.assembly.push_str(&format!("mov {} [rbp - {}], {}\n", word_from_type(&data_type), stack_location - offset, reg_from_size(size, "rax")));
                 }
 
                 right_result

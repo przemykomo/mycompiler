@@ -30,7 +30,7 @@ fn main() {
     let parsed_unit = parse(&tokens);
     dbg!(&parsed_unit);
 
-    let assembly = compile_to_assembly(&parsed_unit);
+    let assembly = compile_to_ir(&parsed_unit);
     //dbg!(&assembly);
 
     let mut file = fs::File::create(write_file_path).expect("Should have been able to open this file for writing");

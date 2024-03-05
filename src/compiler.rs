@@ -5,7 +5,7 @@ use std::iter::Peekable;
 use std::slice::Iter;
 
 struct CompilationState<'a> {
-    assembly: String,
+    ir_unit: IRUnit,
     string_constants: HashMap<String, usize>,
     float_constants: HashMap<String, usize>,
     unique_label_id: i32,
@@ -19,14 +19,16 @@ struct ScopeState<'a> {
     max_stack_size: i32,
     variables: &'a mut Vec<Variable>,
     current_function: &'a FunctionDefinition,
-    assembly: String
+    instructions: Vec<Instruction>,
+    allocated_registers: usize
 }
 
 #[derive(Debug)]
 struct Variable {
     identifier: String,
     stack_location: i32,
-    data_type: DataType
+    data_type: DataType,
+    virtual_reg: usize
 }
 
 struct StructType {
@@ -48,8 +50,7 @@ struct ExpressionResult {
 
 #[derive(Debug)]
 enum ResultContainer {
-    Register,
-    FloatRegister,
+    Register(Register),
     Flag(Flag),
     IdentifierWithOffset { identifier: String, offset: i32 }
 }
@@ -195,10 +196,10 @@ fn compile_function_call(compilation_state: &mut CompilationState, state: &mut S
                             5 => "r9",
                             _ => unreachable!()
                         };
-                        arguments_in_reg_asm.
+                        todo!();
                     }
 
-                    integer_index -= 1;
+                    int_index -= 1;
                 }
             }
         }
@@ -227,7 +228,7 @@ fn compile_function_call(compilation_state: &mut CompilationState, state: &mut S
                                     pop rdi
                                     pop rax\n", arguments_to_append, function_call.identifier);
         state.assembly.push_str(&to_append); */
-        state.assembly.push_str(&format!("{}call {}\n", arguments_to_append, function_call.identifier));
+        state.instructions.push_str(&format!("{}call {}\n", arguments_to_append, function_call.identifier));
         arguments_in_stack_asm.push_str(&format!("add rsp, {}", stack_size_for_args));
         if is_float(&function.return_type) {
             return ExpressionResult { data_type: function.return_type.clone(), result_container: ResultContainer::FloatRegister };
@@ -243,9 +244,54 @@ fn is_float(data_type: &DataType) -> bool {
     data_type.eq(&DataType::Float)
 }
 
-pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
+#[derive(Debug)]
+pub enum Register {
+    Virtual(usize),
+    RSP,
+    RBP,
+}
+
+pub enum RegOrNum {
+    Reg(Register),
+    Num(i32)
+}
+
+pub enum RegOrMem {
+    Reg(Register),
+    Mem { pointer: Register, offset: i32 }
+}
+
+pub enum Instruction {
+    SUB { left: Register, right: RegOrNum },
+    PUSH(Register),
+    POP(Register),
+    MOV { left: RegOrMem, right: RegOrNum },
+    SetFromFlag { left: RegOrMem, flag: Flag },
+    VirtualRegisterAllocation { id: usize, reg_type: DataType },
+    Label(String),
+    RET(Option<Register>)
+}
+
+pub struct Procedure {
+    name: String,
+    instructions: Vec<Instruction>   
+}
+
+pub enum Directive {
+    Extern(String),
+    Global(String),
+    DefineConstString { label: String, value: String },
+    DefineConstFloat { label: String, value: String }
+}
+
+pub struct IRUnit {
+    top_directives: Vec<Directive>,
+    procedures: Vec<Procedure>
+}
+
+pub fn compile_to_ir(parsed_unit: &ParsedUnit) -> IRUnit {
     let mut compilation_state = CompilationState {
-        assembly: String::new(),
+        ir_unit: IRUnit { top_directives: Vec::new(), procedures: Vec::new() },
         string_constants: HashMap::new(),
         float_constants: HashMap::new(),
         unique_label_id: 0,
@@ -267,12 +313,14 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
     }
 
     for function_declaration in parsed_unit.function_declarations.iter() {
-        compilation_state.assembly.push_str(&format!("extern {}\n", function_declaration.name));
+        compilation_state.ir_unit.top_directives.push(Directive::Extern(function_declaration.name));
+        
     }
 
     for function in parsed_unit.functions.iter() {
+        let mut instructions = Vec::<Instruction>::new();
         if function.public {
-            compilation_state.assembly.push_str(&format!("global {}\n", function.prototype.name));
+            compilation_state.ir_unit.top_directives.push(Directive::Global(function.prototype.name));
         }
         //TODO: make compile_scope return information about used registries and only push those.
         //Use scratch registries only if possible.
@@ -285,7 +333,8 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
                                 push r15
                                 push rbp
                                 mov rbp, rsp\n", function.prototype.name);*/
-        compilation_state.assembly.push_str(&format!("{}:\npush rbp\nmov rbp, rsp\n", function.prototype.name));
+        instructions.push(Instruction::PUSH(Register::RBP));
+        instructions.push(Instruction::MOV { left: Register::RBP, right: RegOrNum::Reg(Register::RSP) });
         let mut variables = Vec::new();
         let mut scope_state = ScopeState {
             iter: function.body.iter().peekable(),
@@ -293,11 +342,11 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
             max_stack_size: 0,
             variables: &mut variables,
             current_function: &function,
-            assembly: String::new()
+            instructions: Vec::new()
         };
         compile_scope(&mut scope_state, &mut compilation_state);
-        compilation_state.assembly.push_str(&format!("sub rsp, {}\n", ((scope_state.max_stack_size + 15) / 16) * 16)); // align the stack frame to 2 bytes
-        compilation_state.assembly.push_str(&scope_state.assembly);
+        instructions.push(Instruction::SUB { left: Register::RSP, right: RegOrNum::Num(((scope_state.max_stack_size + 15) / 16) * 16) });
+        instructions.append(&mut scope_state.instructions);
         /*
         to_append = formatdoc!(".{}.end:
                             mov rsp, rbp
@@ -308,18 +357,21 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
                             pop r12
                             pop rbx
                             ret\n", function.prototype.name); */
-        compilation_state.assembly.push_str(&format!(".{}.end:\nmov rsp, rbp\npop rbp\nret\n", function.prototype.name));
+        instructions.push(Instruction::Label(format!(".{}.end", function.prototype.name)));
+        instructions.push(Instruction::MOV { left: RegOrMem::Reg(Register::RSP), right: RegOrNum::Reg(Register::RBP) });
+        instructions.push(Instruction::POP(Register::RBP));
+        instructions.push(Instruction::RET);
     }
 
     for (text, id) in compilation_state.string_constants {
-        compilation_state.assembly.insert_str(0, &format!(".String{}: db '{}', 0\n", id, text));
+        compilation_state.ir_unit.top_directives.push(Directive::DefineConstString { label: format!(".String{}", id), value: text });
     }
 
     for (text, id) in compilation_state.float_constants {
-        compilation_state.assembly.insert_str(0, &format!(".Float{}: dd {}\n", id, text));
+        compilation_state.ir_unit.top_directives.push(Directive::DefineConstFloat { label: format!(".Float{}", id), value: text });
     }
 
-    return compilation_state.assembly;
+    return compilation_state.ir_unit;
 }
 
 fn compile_scope(state: &mut ScopeState, compilation_state: &mut CompilationState) {
@@ -334,27 +386,28 @@ fn compile_scope(state: &mut ScopeState, compilation_state: &mut CompilationStat
 
                 state.stack_size_current = ((state.stack_size_current + size - 1) / size) * size + size;
 
+                let virtual_reg = state.allocated_registers;
+                state.allocated_registers += 1;
+
+                state.variables.push(Variable { identifier: identifier.clone(), stack_location: state.stack_size_current, data_type: data_type.clone(), virtual_reg });
+
+                state.instructions.push(Instruction::VirtualRegisterAllocation { id: virtual_reg, reg_type: data_type.clone() });
+
                 if let Some(expression) = expression_opt {
                     let result = compile_expression(state, compilation_state, &expression);
                     if result.data_type != *data_type {
                         panic!("Variable {} doesn't have the same type as the expression!", identifier);
                     }
                     match result.result_container {
-                        ResultContainer::Register => {
-                            state.assembly.push_str(&format!("mov {} [rbp - {}], {}\n", word_from_type(data_type), state.stack_size_current, reg_from_size(size, "rax")));
-                        },
-                        ResultContainer::FloatRegister => {
-                            state.assembly.push_str(&format!("movss {} [rbp - {}], xmm0\n", word_from_type(data_type), state.stack_size_current));
+                        ResultContainer::Register(reg) => {
+                            state.instructions.push(Instruction::MOV { left: RegOrMem::Reg(Register::Virtual(virtual_reg)), right: RegOrNum::Reg(reg) });
                         },
                         ResultContainer::Flag(flag) => {
-                            let set_instruction = set_instruction_from_flag(&flag);
-                            let reg = reg_from_size(size, "rax");
-                            state.assembly.push_str(&format!("{} {}\nmov {} [rbp - {}], {}\n", set_instruction, reg, word_from_type(data_type), state.stack_size_current, reg));
+                            state.instructions.push(Instruction::SetFromFlag { left: RegOrMem::Reg(Register::Virtual(virtual_reg)), flag });
                         },
                         ResultContainer::IdentifierWithOffset { identifier, offset } => {},
                     }
                 }
-                state.variables.push(Variable { identifier: identifier.clone(), stack_location: state.stack_size_current, data_type: data_type.clone() });
             }, /*
             Statement::VariableAssigment { identifier, expression } => {
                 let result = compile_expression(state, compilation_state, &expression);
@@ -384,7 +437,15 @@ fn compile_scope(state: &mut ScopeState, compilation_state: &mut CompilationStat
                     panic!("Trying to return a different data type than in the function declaration!");
                 }
 
-                state.assembly.push_str(&format!("jmp .{}.end\n", state.current_function.prototype.name));
+                match result.result_container {
+                    ResultContainer::Register(reg) => state.instructions.push(Instruction::RET(Some(reg))),
+                    ResultContainer::Flag(flag) => {
+                        state.instructions.push(Instruction::SetFromFlag { left: RegOrMem::Reg(Register::Virtual(state.allocated_registers)), flag });
+                        state.instructions.push(Instruction::RET(Some(Register::Virtual(state.allocated_registers))));
+                        state.allocated_registers += 1;
+                    },
+                    ResultContainer::IdentifierWithOffset { identifier, offset } => todo!(),
+                }
             }, /*
             Statement::ArrayElementAssigment { identifier, element, expression } => {
                 let element_result = compile_expression(state, compilation_state, &element);
@@ -410,14 +471,14 @@ fn compile_scope(state: &mut ScopeState, compilation_state: &mut CompilationStat
                 if !can_increment(&variable.data_type) {
                     panic!("Cannot increment the variable \"{}\"", &variable.identifier);
                 }
-                state.assembly.push_str(&format!("inc {} [rbp - {}]\n", word_from_type(&variable.data_type), variable.stack_location));
+                state.instructions.push_str(&format!("inc {} [rbp - {}]\n", word_from_type(&variable.data_type), variable.stack_location));
             },
             Statement::Decrement(identifier) => {
                 let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier)).expect(&format!("Undeclared variable: \"{}\"", identifier));
                 if !can_increment(&variable.data_type) {
                     panic!("Cannot decrement the variable \"{}\"", &variable.identifier);
                 }
-                state.assembly.push_str(&format!("dec {} [rbp - {}]\n", word_from_type(&variable.data_type), variable.stack_location));
+                state.instructions.push_str(&format!("dec {} [rbp - {}]\n", word_from_type(&variable.data_type), variable.stack_location));
             }, /*
             Statement::FunctionCall(function_call) => {
                 let _ = compile_function_call(compilation_state, state, function_call);
@@ -431,7 +492,7 @@ fn compile_scope(state: &mut ScopeState, compilation_state: &mut CompilationStat
                 if let ResultContainer::Flag(flag) = result.result_container {
                     let label_id = compilation_state.unique_label_id;
                     compilation_state.unique_label_id += 1;
-                    state.assembly.push_str(&format!("{} .L{}\n", jump_instruction_from_negated_flag(&flag), label_id));
+                    state.instructions.push_str(&format!("{} .L{}\n", jump_instruction_from_negated_flag(&flag), label_id));
                 
                     let variables_len = state.variables.len();
                     let mut scope_state = ScopeState {
@@ -440,17 +501,17 @@ fn compile_scope(state: &mut ScopeState, compilation_state: &mut CompilationStat
                         max_stack_size: state.stack_size_current,
                         variables: state.variables,
                         current_function: state.current_function,
-                        assembly: String::new()
+                        instructions: String::new()
                     };
                     compile_scope(&mut scope_state, compilation_state);
                     state.max_stack_size = state.max_stack_size.max(scope_state.max_stack_size);
-                    state.assembly.push_str(&scope_state.assembly);
+                    state.instructions.push_str(&scope_state.instructions);
                     state.variables.truncate(variables_len);
 
                     if let Some(else_scope) = else_scope {
                         let label_id = compilation_state.unique_label_id;
                         compilation_state.unique_label_id += 1;
-                        state.assembly.push_str(&format!("jmp .L{}\n.L{}:\n", label_id, label_id - 1));
+                        state.instructions.push_str(&format!("jmp .L{}\n.L{}:\n", label_id, label_id - 1));
                     
                         let variables_len = state.variables.len();
                         let mut scope_state = ScopeState {
@@ -459,16 +520,16 @@ fn compile_scope(state: &mut ScopeState, compilation_state: &mut CompilationStat
                             max_stack_size: state.stack_size_current,
                             current_function: state.current_function,
                             variables: state.variables,
-                            assembly: String::new()
+                            instructions: String::new()
                         };
                         compile_scope(&mut scope_state, compilation_state);
                         state.max_stack_size = state.max_stack_size.max(scope_state.max_stack_size);
                         
-                        state.assembly.push_str(&scope_state.assembly);
-                        state.assembly.push_str(&format!(".L{}:\n", label_id));
+                        state.instructions.push_str(&scope_state.instructions);
+                        state.instructions.push_str(&format!(".L{}:\n", label_id));
                         state.variables.truncate(variables_len);
                     } else {
-                        state.assembly.push_str(&format!(".L{}:\n", label_id));
+                        state.instructions.push_str(&format!(".L{}:\n", label_id));
                     }
 
                 } else {
@@ -505,17 +566,17 @@ fn move_to_reg_if_needed(state: &mut ScopeState, mut expression_result: Expressi
         ResultContainer::Register => return expression_result,
         ResultContainer::FloatRegister => return expression_result,
         ResultContainer::Flag(ref flag) => {
-            state.assembly.push_str(&format!("{} rax\n", set_instruction_from_flag(flag)));
+            state.instructions.push_str(&format!("{} rax\n", set_instruction_from_flag(flag)));
             expression_result.result_container = ResultContainer::Register;
             return expression_result;
         },
         ResultContainer::IdentifierWithOffset { identifier, offset } => {
             let variable = state.variables.iter().rev().find(|var| var.identifier.eq(&identifier)).expect(&format!("Undeclared variable: \"{}\"", identifier));
             if let DataType::Array { data_type, size } = expression_result.data_type {
-                state.assembly.push_str(&format!("lea rax, [rbp - {}]\n", variable.stack_location - offset));
+                state.instructions.push_str(&format!("lea rax, [rbp - {}]\n", variable.stack_location - offset));
                 expression_result.data_type = DataType::Pointer(Box::new(*data_type.clone()));
             } else {
-                state.assembly.push_str(&format!("mov rax, [rbp - {}]\n", variable.stack_location - offset));
+                state.instructions.push_str(&format!("mov rax, [rbp - {}]\n", variable.stack_location - offset));
             }
             expression_result.result_container = ResultContainer::Register;
             return expression_result;
@@ -526,11 +587,11 @@ fn move_to_reg_if_needed(state: &mut ScopeState, mut expression_result: Expressi
 fn compile_expression(state: &mut ScopeState, compilation_state: &mut CompilationState, expression: &Expression) -> ExpressionResult {
     match expression {
         Expression::IntLiteral(value) => {
-            state.assembly.push_str(&format!("mov rax, {}\n", value));
+            state.instructions.push_str(&format!("mov rax, {}\n", value));
             ExpressionResult { data_type: DataType::Int, result_container: ResultContainer::Register }
         },
         Expression::CharacterLiteral(c) => {
-            state.assembly.push_str(&format!("mov rax, '{}'\n", c));
+            state.instructions.push_str(&format!("mov rax, '{}'\n", c));
             ExpressionResult { data_type: DataType::Char, result_container: ResultContainer::Register }
         },
         Expression::Identifier(identifier) => {
@@ -597,10 +658,10 @@ fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compilatio
             let right_result = move_to_reg_if_needed(state, right_result);
             match right_result.data_type {
                 DataType::Int => {
-                    state.assembly.push_str("push rax\n");
+                    state.instructions.push_str("push rax\n");
                 },
                 DataType::Float => {
-                    state.assembly.push_str("movd eax, xmm0\npush rax\n");
+                    state.instructions.push_str("movd eax, xmm0\npush rax\n");
                 },
                 _ => panic!("Cannot do an arithmetic operation!")
             }
@@ -614,19 +675,19 @@ fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compilatio
             match left_result.data_type {
                 DataType::Int => {
                     match operator {
-                        ArithmeticOperator::Add => state.assembly.push_str("pop rbx\n add rax, rbx\n"),
-                        ArithmeticOperator::Subtract => state.assembly.push_str("pop rbx\n sub rax, rbx\n"),
-                        ArithmeticOperator::Multiply => state.assembly.push_str("pop rbx\n imul rbx\n"),
-                        ArithmeticOperator::Divide => state.assembly.push_str("pop rbx\n idiv rbx\n")
+                        ArithmeticOperator::Add => state.instructions.push_str("pop rbx\n add rax, rbx\n"),
+                        ArithmeticOperator::Subtract => state.instructions.push_str("pop rbx\n sub rax, rbx\n"),
+                        ArithmeticOperator::Multiply => state.instructions.push_str("pop rbx\n imul rbx\n"),
+                        ArithmeticOperator::Divide => state.instructions.push_str("pop rbx\n idiv rbx\n")
                     }
                     ExpressionResult { data_type: DataType::Int, result_container: ResultContainer::Register }
                 },
                 DataType::Float => {
                     match operator {
-                        ArithmeticOperator::Add => state.assembly.push_str("pop rax\nmovd xmm1, eax\naddss xmm0, xmm1\n"),
-                        ArithmeticOperator::Subtract => state.assembly.push_str("pop rax\nmovd xmm1, eax\nsubss xmm0, xmm1\n"),
-                        ArithmeticOperator::Multiply => state.assembly.push_str("pop rax\nmovd xmm1, eax\nmulss xmm0, xmm1\n"),
-                        ArithmeticOperator::Divide => state.assembly.push_str("pop rax\nmovd xmm1, eax\ndivss xmm0, xmm1\n")
+                        ArithmeticOperator::Add => state.instructions.push_str("pop rax\nmovd xmm1, eax\naddss xmm0, xmm1\n"),
+                        ArithmeticOperator::Subtract => state.instructions.push_str("pop rax\nmovd xmm1, eax\nsubss xmm0, xmm1\n"),
+                        ArithmeticOperator::Multiply => state.instructions.push_str("pop rax\nmovd xmm1, eax\nmulss xmm0, xmm1\n"),
+                        ArithmeticOperator::Divide => state.instructions.push_str("pop rax\nmovd xmm1, eax\ndivss xmm0, xmm1\n")
                     }
                     ExpressionResult { data_type: DataType::Float, result_container: ResultContainer::FloatRegister }
                 },
@@ -636,14 +697,14 @@ fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compilatio
         Expression::ComparisonExpression { left, right, operator } => {
             let right_result = compile_expression(state, compilation_state, right);
             let right_result = move_to_reg_if_needed(state, right_result);
-            state.assembly.push_str("push rax\n");
+            state.instructions.push_str("push rax\n");
             let left_result = compile_expression(state, compilation_state, left);
             let left_result = move_to_reg_if_needed(state, left_result);
             if right_result.data_type != left_result.data_type {
                 panic!("Cannot compare different data types!");
             }
             let size = sizeof(&left_result.data_type, compilation_state);
-            state.assembly.push_str(&format!("pop rbx\n cmp {}, {}\n", reg_from_size(size, "rax"), reg_from_size(size, "rbx")));
+            state.instructions.push_str(&format!("pop rbx\n cmp {}, {}\n", reg_from_size(size, "rax"), reg_from_size(size, "rbx")));
 
             //todo load the reslts into registers to compare if they happen to be booleans
 
@@ -657,7 +718,7 @@ fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compilatio
             let result = compile_expression(state, compilation_state, expression);
             let result = move_to_reg_if_needed(state, result);
             if let DataType::Pointer(data_type) = result.data_type {
-                state.assembly.push_str("mov rax, QWORD [rax]\n");
+                state.instructions.push_str("mov rax, QWORD [rax]\n");
                 ExpressionResult { data_type: *data_type, result_container: ResultContainer::Register }
             } else {
                 panic!("Cannot dereference a non pointer!");
@@ -668,7 +729,7 @@ fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compilatio
 
             if let ResultContainer::IdentifierWithOffset { identifier, offset } = result.result_container {
                 let variable = state.variables.iter().rev().find(|var| var.identifier.eq(&identifier)).expect(&format!("Undeclared variable: \"{}\"", identifier));
-                state.assembly.push_str(&format!("lea rax, [rbp - {}]\n", variable.stack_location - offset));
+                state.instructions.push_str(&format!("lea rax, [rbp - {}]\n", variable.stack_location - offset));
                 ExpressionResult { data_type: DataType::Pointer(Box::new(variable.data_type.clone())), result_container: ResultContainer::Register }
             } else {
                 panic!("Cannot take address of an rvalue!");
@@ -682,14 +743,14 @@ fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compilatio
                 id = compilation_state.string_constants.len();
                 compilation_state.string_constants.insert(text.clone(), id);
             }
-            state.assembly.push_str(&format!("lea rax, [.String{}]\n", id));
+            state.instructions.push_str(&format!("lea rax, [.String{}]\n", id));
             ExpressionResult { data_type: DataType::Pointer(Box::new(DataType::Char)), result_container: ResultContainer::Register }
         },
         Expression::FunctionCall(function_call) => {
             compile_function_call(compilation_state, state, function_call)
         },
         Expression::BoolLiteral(value) => {
-            state.assembly.push_str(&format!("mov rax, {}\n", *value as i32));
+            state.instructions.push_str(&format!("mov rax, {}\n", *value as i32));
             ExpressionResult { data_type: DataType::Boolean, result_container: ResultContainer::Register }
         },
         Expression::FloatLiteral(value) => {
@@ -700,7 +761,7 @@ fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compilatio
                 id = compilation_state.float_constants.len();
                 compilation_state.float_constants.insert(value.clone(), id);
             }
-            state.assembly.push_str(&format!("movss xmm0, DWORD [.Float{}]\n", id));
+            state.instructions.push_str(&format!("movss xmm0, DWORD [.Float{}]\n", id));
             ExpressionResult { data_type: DataType::Float, result_container: ResultContainer::FloatRegister }
         }
         Expression::Assigment { left, right } => {
@@ -726,9 +787,9 @@ fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compilatio
                 let stack_location = variable.stack_location.clone();
                 
                 if is_float(&data_type) {
-                    state.assembly.push_str(&format!("movd eax, xmm0\nmov {} [rbp - {}], {}\n", word_from_type(&data_type), stack_location - offset, reg_from_size(size, "rax")));
+                    state.instructions.push_str(&format!("movd eax, xmm0\nmov {} [rbp - {}], {}\n", word_from_type(&data_type), stack_location - offset, reg_from_size(size, "rax")));
                 } else {
-                    state.assembly.push_str(&format!("mov {} [rbp - {}], {}\n", word_from_type(&data_type), stack_location - offset, reg_from_size(size, "rax")));
+                    state.instructions.push_str(&format!("mov {} [rbp - {}], {}\n", word_from_type(&data_type), stack_location - offset, reg_from_size(size, "rax")));
                 }
 
                 right_result

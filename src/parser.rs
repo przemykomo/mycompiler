@@ -302,7 +302,7 @@ pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
                             if let Some(Token::CurlyBracketOpen) = iter.next() {
                                 Some(parse_scope(iter))
                             } else {
-                                panic!("Expected opened curly brackets in th else statement!");
+                                panic!("Expected opened curly brackets in the else statement!");
                             }
                         } else {
                             None
@@ -352,7 +352,6 @@ fn parse_assigment(iter: &mut Peekable<Iter<Token>>) -> Expression {
             return left;
         }
     }
-    
 
     return left;
 }
@@ -472,34 +471,45 @@ fn parse_member_access(iter: &mut Peekable<Iter<Token>>) -> Expression {
 }
 
 fn parse_atom(iter: &mut Peekable<Iter<Token>>) -> Expression {
-    if let Some(Token::Identifier(identifier)) = iter.next() {
-        match iter.peek() {
-            Some(Token::SquareParenthesisOpen) => {
-                iter.next();
-                let expression = parse_expression(iter);
-                let Some(Token::SquareParenthesisClose) = iter.next() else {
-                    panic!("Expected closed square parenthesis.");
-                };
-                Expression::ArraySubscript { identifier: identifier.clone(), element: Box::new(expression) }
-            },
-            Some(Token::ParenthesisOpen) => {
-                iter.next();
+    match iter.next() {
+        Some(Token::Identifier(identifier)) => {
+            match iter.peek() {
+                Some(Token::SquareParenthesisOpen) => {
+                    iter.next();
+                    let expression = parse_expression(iter);
+                    let Some(Token::SquareParenthesisClose) = iter.next() else {
+                        panic!("Expected closed square parenthesis.");
+                    };
+                    Expression::ArraySubscript { identifier: identifier.clone(), element: Box::new(expression) }
+                },
+                Some(Token::ParenthesisOpen) => {
+                    iter.next();
 
-                let arguments = if let Some(Token::ParenthesisClose) = iter.peek() {
-                    Vec::new()
-                } else {
-                    parse_arguments_passing(iter)
-                };
-                
-                if let Some(Token::ParenthesisClose) = iter.next() {
-                    Expression::FunctionCall(FunctionCall { identifier: identifier.clone() , arguments })
-                } else {
-                    panic!("Expected ')' at the end of function call.");
-                }
-            },
-            _ => Expression::Identifier(identifier.clone()),
+                    let arguments = if let Some(Token::ParenthesisClose) = iter.peek() {
+                        Vec::new()
+                    } else {
+                        parse_arguments_passing(iter)
+                    };
+                    
+                    if let Some(Token::ParenthesisClose) = iter.next() {
+                        Expression::FunctionCall(FunctionCall { identifier: identifier.clone() , arguments })
+                    } else {
+                        panic!("Expected ')' at the end of function call.");
+                    }
+                },
+                _ => Expression::Identifier(identifier.clone()),
+            }
+        },
+        Some(Token::ParenthesisOpen) => {
+            let expression = parse_expression(iter);
+            if let Some(Token::ParenthesisClose) = iter.next() {
+                expression
+            } else {
+                panic!("Expected closing parenthesis.");
+            }
+        },
+        _ => {
+            panic!("Expected an identifier or parenthesis.");
         }
-    } else {
-        panic!("Expected an identifier.");
     }
 }

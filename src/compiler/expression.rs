@@ -4,27 +4,21 @@ use std::rc::Rc;
 
 use super::*;
 
-pub fn compile_expression(state: & mut ScopeState, compilation_state: &mut CompilationState, expression: &Expression) -> ExpressionResult {
+pub fn compile_expression(state: &mut ScopeState, compilation_state: &mut CompilationState, expression: &Expression) -> ExpressionResult {
     match expression {
         Expression::IntLiteral(value) => {
-            if let Some(reg) = get_free_register(state) {
-                state.assembly.push_str(&format!("mov {}, {}\n", reg_from_size(8, reg), value));
-                let reg_rc = Rc::new(RefCell::new(reg));
-                state.used_registers.insert(reg, reg_rc.clone());
-                ExpressionResult { data_type: DataType::Int, result_container: ResultContainer::Register(reg_rc) }
-            } else {
-                todo!()
-            }
+            let reg = force_get_any_free_register(state, &[]);
+            state.assembly.push_str(&format!("mov {}, {}\n", reg_from_size(8, reg), value));
+            let temp = Rc::new(RefCell::new(TempVariable::Register(reg)));
+            state.used_registers.insert(reg, temp.clone());
+            ExpressionResult { data_type: DataType::Int, result_container: ResultContainer::TempVariable(temp) }
         },
         Expression::CharacterLiteral(c) => {
-            if let Some(reg) = get_free_register(state) {
-                state.assembly.push_str(&format!("mov {}, {}\n", reg_from_size(1, reg), c));
-                let reg_rc = Rc::new(RefCell::new(reg));
-                state.used_registers.insert(reg, reg_rc.clone());
-                ExpressionResult { data_type: DataType::Char, result_container: ResultContainer::Register(reg_rc) }
-            } else {
-                todo!()
-            }
+            let reg = force_get_any_free_register(state, &[]);
+            state.assembly.push_str(&format!("mov {}, {}\n", reg_from_size(1, reg), c));
+            let temp = Rc::new(RefCell::new(TempVariable::Register(reg)));
+            state.used_registers.insert(reg, temp.clone());
+            ExpressionResult { data_type: DataType::Char, result_container: ResultContainer::TempVariable(temp) }
         },
         Expression::Identifier(identifier) => {
             let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier)).expect(&format!("Undeclared variable: \"{}\"", identifier));
@@ -55,45 +49,34 @@ pub fn compile_expression(state: & mut ScopeState, compilation_state: &mut Compi
 
             match left_result.data_type {
                 DataType::Int => {
-                    let ResultContainer::Register(left_reg) = left_result.result_container else { unreachable!() };
-                    let ResultContainer::Register(right_reg) = right_result.result_container else { unreachable!() };
+                    let ResultContainer::TempVariable(left_temp) = left_result.result_container else { unreachable!() };
+                    let ResultContainer::TempVariable(right_temp) = right_result.result_container else { unreachable!() };
+                    let TempVariable::Register(left_reg) = left_temp.borrow().clone() else { unreachable!() };
+                    let TempVariable::Register(right_reg) = right_temp.borrow().clone() else { unreachable!() };
+
                     match operator {
                         ArithmeticOperator::Add => state.assembly.push_str(&format!("add {}, {}\n",
-                                reg_from_size(8, *left_reg.borrow()), reg_from_size(8, *right_reg.borrow()))),
+                                reg_from_size(8, left_reg), reg_from_size(8, right_reg))),
                         ArithmeticOperator::Subtract => state.assembly.push_str(&format!("sub {}, {}\n",
-                                reg_from_size(8, *left_reg.borrow()), reg_from_size(8, *right_reg.borrow()))),
-                        //ArithmeticOperator::Multiply => state.assembly.push_str("imul rbx\n"),
+                                reg_from_size(8, left_reg), reg_from_size(8, right_reg))),
+                        ArithmeticOperator::Multiply => state.assembly.push_str(&format!("imul {}, {}\n",
+                                reg_from_size(8, left_reg), reg_from_size(8, right_reg))),
                         ArithmeticOperator::Divide => {
-                            if *left_reg.borrow() != RAX {
-                                if let Some(other_rc) = state.used_registers.remove(&RAX) {
-                                    if let Some(reg) = get_free_register(state) {
-                                        state.assembly.push_str(&format!("mov {}, {}\n", reg_from_size(8, reg), reg_from_size(8, *other_rc.borrow())));
-                                        *other_rc.borrow_mut() = reg;
-                                        state.used_registers.insert(reg, other_rc);
-                                    } else {
-                                        todo!();
-                                    }
-                                }
-                                state.assembly.push_str(&format!("mov {}, {}\n", reg_from_size(8, RAX), reg_from_size(8, *left_reg.borrow())));
-                                state.used_registers.remove(&left_reg.borrow());
-                                *left_reg.borrow_mut() = RAX;
-                                state.used_registers.insert(RAX, left_reg.clone());
+                            if left_reg != RAX {
+                                free_register(state, RAX);
+                                state.assembly.push_str(&format!("mov {}, {}\n", reg_from_size(8, RAX), reg_from_size(8, left_reg)));
+                                state.used_registers.remove(&left_reg);
+                                *left_temp.borrow_mut() = TempVariable::Register(RAX);
+                                state.used_registers.insert(RAX, left_temp.clone());
                             }
-                            if let Some(other_rc) = state.used_registers.remove(&RDX) {
-                                if let Some(reg) = get_free_register(state) {
-                                    state.assembly.push_str(&format!("mov {}, {}\n", reg_from_size(8, reg), reg_from_size(8, *other_rc.borrow())));
-                                    *other_rc.borrow_mut() = reg;
-                                    state.used_registers.insert(reg, other_rc);
-                                } else {
-                                    todo!();
-                                }
+                            if state.used_registers.contains_key(&RDX) {
+                                free_register(state, RDX);
                             }
-                            state.assembly.push_str(&format!("cqo\nidiv {}\n", reg_from_size(8, *right_reg.borrow())));
+                            state.assembly.push_str(&format!("cqo\nidiv {}\n", reg_from_size(8, right_reg)));
                         },
-                        _ => todo!()
                     }
-                    state.used_registers.remove(&right_reg.borrow());
-                    ExpressionResult { data_type: DataType::Int, result_container: ResultContainer::Register(left_reg) }
+                    state.used_registers.remove(&right_reg);
+                    ExpressionResult { data_type: DataType::Int, result_container: ResultContainer::TempVariable(left_temp) }
                 },
                 DataType::Float => {
                     match operator {
@@ -117,11 +100,13 @@ pub fn compile_expression(state: & mut ScopeState, compilation_state: &mut Compi
             }
             let size = sizeof(&left_result.data_type, compilation_state);
             
-            let ResultContainer::Register(left_reg) = left_result.result_container else { unreachable!() };
-            let ResultContainer::Register(right_reg) = right_result.result_container else { unreachable!() };
-            state.assembly.push_str(&format!("cmp {}, {}\n", reg_from_size(size, *left_reg.borrow()), reg_from_size(size, *right_reg.borrow())));
-            state.used_registers.remove(&left_reg.borrow());
-            state.used_registers.remove(&right_reg.borrow());
+            let ResultContainer::TempVariable(left_temp) = left_result.result_container else { unreachable!() };
+            let ResultContainer::TempVariable(right_temp) = right_result.result_container else { unreachable!() };
+            let TempVariable::Register(left_reg) = left_temp.borrow().clone() else { unreachable!() };
+            let TempVariable::Register(right_reg) = right_temp.borrow().clone() else { unreachable!() };
+            state.assembly.push_str(&format!("cmp {}, {}\n", reg_from_size(size, left_reg), reg_from_size(size, right_reg)));
+            state.used_registers.remove(&left_reg);
+            state.used_registers.remove(&right_reg);
 
             //todo load the reslts into registers to compare if they happen to be booleans
 
@@ -134,11 +119,13 @@ pub fn compile_expression(state: & mut ScopeState, compilation_state: &mut Compi
         Expression::Dereference(expression) => {
             let result = compile_expression(state, compilation_state, expression);
             let result = move_to_reg_if_needed(state, result);
-            let ResultContainer::Register(reg) = result.result_container else { unreachable!() };
+            let ResultContainer::TempVariable(temp) = result.result_container else { unreachable!() };
+            let TempVariable::Register(reg) = temp.borrow().clone() else { unreachable!() };
+
             if let DataType::Pointer(data_type) = result.data_type {
-                let reg_name = reg_from_size(8, *reg.borrow());
+                let reg_name = reg_from_size(8, reg);
                 state.assembly.push_str(&format!("mov {reg_name}, QWORD [{reg_name}]\n"));
-                ExpressionResult { data_type: *data_type, result_container: ResultContainer::Register(reg) }
+                ExpressionResult { data_type: *data_type, result_container: ResultContainer::TempVariable(temp) }
             } else {
                 panic!("Cannot dereference a non pointer!");
             }
@@ -147,13 +134,10 @@ pub fn compile_expression(state: & mut ScopeState, compilation_state: &mut Compi
             let result = compile_expression(state, compilation_state, expression);
 
             if let ResultContainer::IdentifierWithOffset { identifier, offset } = result.result_container {
+                let reg = force_get_any_free_register(state, &[]);
                 let variable = state.variables.iter().rev().find(|var| var.identifier.eq(&identifier)).expect(&format!("Undeclared variable: \"{}\"", identifier));
-                if let Some(reg) = get_free_register(state) {
-                    state.assembly.push_str(&format!("lea {}, [rbp - {}]\n", reg_from_size(8, reg), variable.stack_location - offset));
-                    ExpressionResult { data_type: DataType::Pointer(Box::new(variable.data_type.clone())), result_container: ResultContainer::Register(Rc::new(RefCell::new(reg))) }
-                } else {
-                    todo!();
-                }
+                state.assembly.push_str(&format!("lea {}, [rbp - {}]\n", reg_from_size(8, reg), variable.stack_location - offset));
+                ExpressionResult { data_type: DataType::Pointer(Box::new(variable.data_type.clone())), result_container: ResultContainer::TempVariable(Rc::new(RefCell::new(TempVariable::Register(reg)))) }
             } else {
                 panic!("Cannot take address of an rvalue!");
             }
@@ -166,23 +150,17 @@ pub fn compile_expression(state: & mut ScopeState, compilation_state: &mut Compi
                 id = compilation_state.string_constants.len();
                 compilation_state.string_constants.insert(text.clone(), id);
             }
-            if let Some(reg) = get_free_register(state) {
-                state.assembly.push_str(&format!("lea {}, [.String{}]\n", reg_from_size(8, reg), id));
-                ExpressionResult { data_type: DataType::Pointer(Box::new(DataType::Char)), result_container: ResultContainer::Register(Rc::new(RefCell::new(reg))) }
-            } else {
-                todo!();
-            }
+            let reg = force_get_any_free_register(state, &[]);
+            state.assembly.push_str(&format!("lea {}, [.String{}]\n", reg_from_size(8, reg), id));
+            ExpressionResult { data_type: DataType::Pointer(Box::new(DataType::Char)), result_container: ResultContainer::TempVariable(Rc::new(RefCell::new(TempVariable::Register(reg)))) }
         },
         Expression::FunctionCall(function_call) => {
             compile_function_call(compilation_state, state, function_call)
         },
         Expression::BoolLiteral(value) => {
-            if let Some(reg) = get_free_register(state) {
-                state.assembly.push_str(&format!("mov {}, {}\n", reg_from_size(8, reg), *value as i32));
-                ExpressionResult { data_type: DataType::Boolean, result_container: ResultContainer::Register(Rc::new(RefCell::new(reg))) }
-            } else {
-                todo!();
-            }
+            let reg = force_get_any_free_register(state, &[]);
+            state.assembly.push_str(&format!("mov {}, {}\n", reg_from_size(8, reg), *value as i32));
+            ExpressionResult { data_type: DataType::Boolean, result_container: ResultContainer::TempVariable(Rc::new(RefCell::new(TempVariable::Register(reg)))) }
         },
         Expression::FloatLiteral(value) => {
             let id : usize;
@@ -199,7 +177,8 @@ pub fn compile_expression(state: & mut ScopeState, compilation_state: &mut Compi
             let left_result = compile_expression(state, compilation_state, left);
             let right_result = compile_expression(state, compilation_state, right);
             let right_result = move_to_reg_if_needed(state, right_result);
-            let ResultContainer::Register(ref reg) = right_result.result_container else { unreachable!() };
+            let ResultContainer::TempVariable(ref temp) = right_result.result_container else { unreachable!() };
+            let TempVariable::Register(reg) = temp.borrow().clone() else { unreachable!() };
 
             if right_result.data_type != left_result.data_type {
                 panic!("Cannot assing value of a different data type!");
@@ -226,7 +205,7 @@ pub fn compile_expression(state: & mut ScopeState, compilation_state: &mut Compi
                     todo!();
                     //state.assembly.push_str(&format!("movd eax, xmm0\nmov {} [rbp - {}], {}\n", sizeofword(&data_type), stack_location - offset, reg_from_size(size, )));
                 } else {
-                    state.assembly.push_str(&format!("mov {} [rbp - {}], {}\n", sizeofword(&data_type), stack_location - offset, reg_from_size(size, *reg.borrow())));
+                    state.assembly.push_str(&format!("mov {} [rbp - {}], {}\n", sizeofword(&data_type), stack_location - offset, reg_from_size(size, reg)));
                 }
 
                 right_result
@@ -262,20 +241,27 @@ pub fn compile_expression(state: & mut ScopeState, compilation_state: &mut Compi
 
 fn move_to_reg_if_needed(state: &mut ScopeState, mut expression_result: ExpressionResult) -> ExpressionResult {
     match expression_result.result_container {
-        ResultContainer::Register(_) => return expression_result,
+        ResultContainer::TempVariable(ref temp) => {
+            let temp = temp.clone();
+            let temp = temp.borrow();
+            match *temp {
+                TempVariable::Register(_) => expression_result,
+                TempVariable::Stack(_) => todo!(),
+            }
+        },
         ResultContainer::FloatRegister => todo!(),
         ResultContainer::Flag(_) => todo!(),
         ResultContainer::IdentifierWithOffset { identifier, offset } => {
             let variable = state.variables.iter().rev().find(|var| var.identifier.eq(&identifier)).expect(&format!("Undeclared variable: \"{}\"", identifier));
-            if let Some(reg) = get_free_register(state) {
+            if let Some(reg) = get_any_free_register(state) {
                 state.assembly.push_str(&format!("mov {}, [rbp - {}]\n", reg_from_size(8, reg), variable.stack_location - offset));
-                let reg_rc = Rc::new(RefCell::new(reg));
-                expression_result.result_container = ResultContainer::Register(reg_rc.clone());
-                state.used_registers.insert(reg, reg_rc);
-                return expression_result;
+                let temp = Rc::new(RefCell::new(TempVariable::Register(reg)));
+                expression_result.result_container = ResultContainer::TempVariable(temp.clone());
+                state.used_registers.insert(reg, temp);
+                expression_result
             } else {
                 todo!();
             }
-        },
+        }
     }
 }

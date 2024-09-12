@@ -1,6 +1,4 @@
 use crate::tokenizer::DataType;
-use std::cell::RefCell;
-use std::rc::Rc;
 
 use expression::compile_expression;
 
@@ -24,22 +22,26 @@ pub fn compile_scope(state: &mut ScopeState, compilation_state: &mut Compilation
                         panic!("Variable {} doesn't have the same type as the expression!", identifier);
                     }
                     match result.result_container {
-                        ResultContainer::Register(reg) => {
-                            state.assembly.push_str(&format!("mov {} [rbp - {}], {}\n",
-                                    sizeofword(data_type), state.stack_size_current, reg_from_size(size, reg.borrow().clone())));
+                        ResultContainer::TempVariable(temp) => {
+                            match *temp.borrow() {
+                                TempVariable::Register(reg) => {
+                                    state.assembly.push_str(&format!("mov {} [rbp - {}], {}\n",
+                                        sizeofword(data_type), state.stack_size_current, reg_from_size(size, reg)));
+                                    state.used_registers.remove(&reg);
+                                },
+                                TempVariable::Stack(_stack_location) => {
+                                    todo!()
+                                }
+                            }
                         },
                         ResultContainer::FloatRegister => {
                             state.assembly.push_str(&format!("movss {} [rbp - {}], xmm0\n", sizeofword(data_type), state.stack_size_current));
                         },
                         ResultContainer::Flag(flag) => {
-                            if let Some(reg) = get_free_register(state) {
-                                let set_instruction = set_instruction_from_flag(&flag);
-                                let reg_str = reg_from_size(size, reg);
-                                state.assembly.push_str(&format!("{} {}\nmov {} [rbp - {}], {}\n", set_instruction, reg_str, sizeofword(data_type), state.stack_size_current, reg_str));
-                                state.used_registers.insert(reg, Rc::new(RefCell::new(reg)));
-                            } else {
-                                todo!();
-                            }
+                            let reg = force_get_any_free_register(state, &[]);
+                            let set_instruction = set_instruction_from_flag(&flag);
+                            let reg_str = reg_from_size(size, reg);
+                            state.assembly.push_str(&format!("{} {}\nmov {} [rbp - {}], {}\n", set_instruction, reg_str, sizeofword(data_type), state.stack_size_current, reg_str));
                         },
                         ResultContainer::IdentifierWithOffset { identifier: _, offset: _ } => {},
                     }

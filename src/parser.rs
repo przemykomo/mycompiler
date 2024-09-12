@@ -138,14 +138,13 @@ pub fn parse(tokens: &Vec<Token>) -> ParsedUnit {
     let mut iter = tokens.iter().peekable();
 
     while let Some(token) = iter.next() {
-        dbg!(token);
         match token {
             Token::Struct => {
                 if let Some((Token::Identifier(identifier), Token::CurlyBracketOpen)) = iter.next_tuple() {
                     let mut members : Vec<StructMember> = Vec::new();
                     while let Some((Token::DataType(data_type), Token::Identifier(member_name))) = iter.clone().next_tuple() {
-                        dbg!(iter.next());
-                        dbg!(iter.next());
+                        iter.next();
+                        iter.next();
 
                         members.push(StructMember { identifier: member_name.clone(), data_type: data_type.clone() });
                         match iter.next() {
@@ -275,7 +274,6 @@ pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
     let mut abstract_syntax_tree = Vec::<Statement>::new();
 
     while let Some(token) = iter.peek() {
-        dbg!(token);
         match token {
             Token::DataType(data_type) => {
                 iter.next();
@@ -283,9 +281,8 @@ pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
             },
             Token::Identifier(_struct_name) => {
                 let mut iter_clone = iter.clone();
-                dbg!(_struct_name);
                 if let Some((Token::Identifier(struct_name), Token::Identifier(_identifier))) = iter_clone.next_tuple() {
-                    dbg!(iter.next());
+                    iter.next();
                     parse_variable_definition_with_data_type(&mut abstract_syntax_tree, &DataType::Struct(struct_name.clone()), iter);
                 } else {
                     abstract_syntax_tree.push(Statement::Expression(parse_expression(iter)));
@@ -425,7 +422,6 @@ fn parse_multiplication(iter: &mut Peekable<Iter<Token>>) -> Expression {
 
 fn parse_literals_pointers(iter: &mut Peekable<Iter<Token>>) -> Expression {
     let next = iter.peek();
-    dbg!(next);
     match next {
         Some(Token::IntLiteral(value)) => {
             iter.next();

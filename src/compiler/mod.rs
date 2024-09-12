@@ -10,6 +10,9 @@ pub mod expression;
 mod scope;
 use scope::compile_scope;
 
+pub mod regmap;
+use regmap::RegMap;
+
 pub struct CompilationState<'a> {
     assembly: String,
     string_constants: HashMap<String, usize>,
@@ -26,7 +29,7 @@ pub struct ScopeState<'a> {
     variables: &'a mut Vec<Variable>,
     current_function: &'a FunctionDefinition,
     assembly: String,
-    used_registers: HashMap<Register, Rc<RefCell<Register>>>
+    used_registers: RegMap
 }
 
 #[derive(Debug)]
@@ -55,14 +58,20 @@ pub struct ExpressionResult {
 
 #[derive(Debug)]
 enum ResultContainer {
-    Register(Rc<RefCell<Register>>),
+    TempVariable(Rc<RefCell<TempVariable>>),
     FloatRegister,
     Flag(Flag),
     IdentifierWithOffset { identifier: String, offset: i32 }
 }
 
 #[derive(Debug, Eq, Hash, PartialEq, Clone, Copy)]
-enum Register {
+pub enum TempVariable {
+    Register(Register),
+    Stack(i32)
+}
+
+#[derive(Debug, Eq, Hash, PartialEq, Clone, Copy)]
+pub enum Register {
     RAX,
     RBX,
     RCX,
@@ -89,13 +98,44 @@ enum Flag {
     SMALLER
 }
 
-fn get_free_register(state: &ScopeState) -> Option<Register> {
+fn get_any_free_register(state: &ScopeState) -> Option<Register> {
     for reg in [RAX, RBX, RCX, RDX, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15] {
         if !state.used_registers.contains_key(&reg) {
             return Some(reg);
         }
     }
     return None;
+}
+
+fn force_get_any_free_register(state: &mut ScopeState, protected_registers: &[Register]) -> Register {
+    if let Some(reg) = get_any_free_register(state) {
+        reg
+    } else {
+        let Some(oldest_temp) = state.used_registers.get_oldest(protected_registers) else { unreachable!() };
+        let TempVariable::Register(reg) = oldest_temp.borrow().clone() else { unreachable!() };
+        state.stack_size_current += 8;
+        state.assembly.push_str(&format!("mov QWORD [rbp - {}], {}\n", state.stack_size_current, reg_from_size(8, reg)));
+        state.used_registers.remove(&reg);
+        *oldest_temp.borrow_mut() = TempVariable::Stack(state.stack_size_current);
+        reg
+    }
+}
+
+fn free_register(state: &mut ScopeState, reg: Register) {
+    if let Some(free_reg) = get_any_free_register(state) {
+        state.assembly.push_str(&format!("mov {}, {}\n", reg_from_size(8, free_reg), reg_from_size(8, reg)));
+        if let Some(temp) = state.used_registers.remove(&reg) {
+            *temp.borrow_mut() = TempVariable::Register(free_reg);
+            state.used_registers.insert(free_reg, temp);
+        }
+    } else {
+        let Some(temp) = state.used_registers.remove(&reg) else { unreachable!() };
+        let TempVariable::Register(reg) = temp.borrow().clone() else { unreachable!() };
+        state.stack_size_current += 8;
+        state.assembly.push_str(&format!("mov QWORD [rbp - {}], {}\n", state.stack_size_current, reg_from_size(8, reg)));
+        state.used_registers.remove(&reg);
+        *temp.borrow_mut() = TempVariable::Stack(state.stack_size_current);
+    }
 }
 
 fn can_increment(data_type: &DataType) -> bool {
@@ -145,7 +185,7 @@ fn reg_from_size(size: i32, reg: Register) -> &'static str {
         (R13, 8) => "r13", (R13, 4) => "r13d", (R13, 2) => "r13w", (R13, 1) => "r13b",
         (R14, 8) => "r14", (R14, 4) => "r14d", (R14, 2) => "r14w", (R14, 1) => "r14b",
         (R15, 8) => "r15", (R15, 4) => "r15d", (R15, 2) => "r15w", (R15, 1) => "r15b",
-        _ => todo!("add more regs")
+        _ => unreachable!()
     }
 }
 
@@ -257,7 +297,10 @@ fn compile_function_call(compilation_state: &mut CompilationState, state: &mut S
         if is_float(&function.return_type) {
             return ExpressionResult { data_type: function.return_type.clone(), result_container: ResultContainer::FloatRegister };
         }
-        return ExpressionResult { data_type: function.return_type.clone(), result_container: ResultContainer::Register(Rc::new(RefCell::new(Register::RAX))) };
+        return ExpressionResult {
+            data_type: function.return_type.clone(),
+            result_container: ResultContainer::TempVariable(Rc::new(RefCell::new(TempVariable::Register(Register::RAX))))
+        };
     } else {
         panic!("Cannot find function with a name \"{}\"", function_call.identifier);
     }
@@ -319,7 +362,7 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
             variables: &mut variables,
             current_function: &function,
             assembly: String::new(),
-            used_registers: HashMap::new()
+            used_registers: RegMap::new()
         };
         compile_scope(&mut scope_state, &mut compilation_state);
         compilation_state.assembly.push_str(&format!("sub rsp, {}\n", ((scope_state.max_stack_size + 15) / 16) * 16)); // align the stack frame to 2 bytes

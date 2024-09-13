@@ -25,7 +25,7 @@ pub fn compile_scope(state: &mut ScopeState, compilation_state: &mut Compilation
                         ResultContainer::TempVariable(temp) => {
                             match *temp.borrow() {
                                 TempVariable::Register(reg) => {
-                                    state.assembly.push_str(&format!("mov {} [rbp - {}], {}\n",
+                                    state.assembly.push_str(&fmt!("mov {} [rbp - {}], {}\n",
                                         sizeofword(data_type), state.stack_size_current, reg_from_size(size, reg)));
                                     state.used_registers.remove(&reg);
                                 },
@@ -35,13 +35,13 @@ pub fn compile_scope(state: &mut ScopeState, compilation_state: &mut Compilation
                             }
                         },
                         ResultContainer::FloatRegister => {
-                            state.assembly.push_str(&format!("movss {} [rbp - {}], xmm0\n", sizeofword(data_type), state.stack_size_current));
+                            state.assembly.push_str(&fmt!("movss {} [rbp - {}], xmm0\n", sizeofword(data_type), state.stack_size_current));
                         },
                         ResultContainer::Flag(flag) => {
                             let reg = force_get_any_free_register(state, &[]);
                             let set_instruction = set_instruction_from_flag(&flag);
                             let reg_str = reg_from_size(size, reg);
-                            state.assembly.push_str(&format!("{} {}\nmov {} [rbp - {}], {}\n", set_instruction, reg_str, sizeofword(data_type), state.stack_size_current, reg_str));
+                            state.assembly.push_str(&fmt!("{} {}\nmov {} [rbp - {}], {}\n", set_instruction, reg_str, sizeofword(data_type), state.stack_size_current, reg_str));
                         },
                         ResultContainer::IdentifierWithOffset { identifier: _, offset: _ } => {},
                     }
@@ -55,21 +55,21 @@ pub fn compile_scope(state: &mut ScopeState, compilation_state: &mut Compilation
                     panic!("Trying to return a different data type than in the function declaration!");
                 }
 
-                state.assembly.push_str(&format!("jmp .{}.end\n", state.current_function.prototype.name));
+                state.assembly.push_str(&fmt!("jmp .{}.end\n", state.current_function.prototype.name));
             },
             Statement::Increment(identifier) => {
-                let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier)).expect(&format!("Undeclared variable: \"{}\"", identifier));
+                let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier)).expect(&fmt!("Undeclared variable: \"{}\"", identifier));
                 if !can_increment(&variable.data_type) {
                     panic!("Cannot increment the variable \"{}\"", &variable.identifier);
                 }
-                state.assembly.push_str(&format!("inc {} [rbp - {}]\n", sizeofword(&variable.data_type), variable.stack_location));
+                state.assembly.push_str(&fmt!("inc {} [rbp - {}]\n", sizeofword(&variable.data_type), variable.stack_location));
             },
             Statement::Decrement(identifier) => {
-                let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier)).expect(&format!("Undeclared variable: \"{}\"", identifier));
+                let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier)).expect(&fmt!("Undeclared variable: \"{}\"", identifier));
                 if !can_increment(&variable.data_type) {
                     panic!("Cannot decrement the variable \"{}\"", &variable.identifier);
                 }
-                state.assembly.push_str(&format!("dec {} [rbp - {}]\n", sizeofword(&variable.data_type), variable.stack_location));
+                state.assembly.push_str(&fmt!("dec {} [rbp - {}]\n", sizeofword(&variable.data_type), variable.stack_location));
             },
             Statement::If { expression, scope, else_scope } => {
                 let result = compile_expression(state, compilation_state, expression);
@@ -80,7 +80,7 @@ pub fn compile_scope(state: &mut ScopeState, compilation_state: &mut Compilation
                 if let ResultContainer::Flag(flag) = result.result_container {
                     let label_id = compilation_state.unique_label_id;
                     compilation_state.unique_label_id += 1;
-                    state.assembly.push_str(&format!("{} .L{}\n", jump_instruction_from_negated_flag(&flag), label_id));
+                    state.assembly.push_str(&fmt!("{} .L{}\n", jump_instruction_from_negated_flag(&flag), label_id));
                 
                     let variables_len = state.variables.len();
                     let mut scope_state = ScopeState {
@@ -100,7 +100,7 @@ pub fn compile_scope(state: &mut ScopeState, compilation_state: &mut Compilation
                     if let Some(else_scope) = else_scope {
                         let label_id = compilation_state.unique_label_id;
                         compilation_state.unique_label_id += 1;
-                        state.assembly.push_str(&format!("jmp .L{}\n.L{}:\n", label_id, label_id - 1));
+                        state.assembly.push_str(&fmt!("jmp .L{}\n.L{}:\n", label_id, label_id - 1));
                     
                         let variables_len = state.variables.len();
                         let mut scope_state = ScopeState {
@@ -116,10 +116,10 @@ pub fn compile_scope(state: &mut ScopeState, compilation_state: &mut Compilation
                         state.max_stack_size = state.max_stack_size.max(scope_state.max_stack_size);
                         
                         state.assembly.push_str(&scope_state.assembly);
-                        state.assembly.push_str(&format!(".L{}:\n", label_id));
+                        state.assembly.push_str(&fmt!(".L{}:\n", label_id));
                         state.variables.truncate(variables_len);
                     } else {
-                        state.assembly.push_str(&format!(".L{}:\n", label_id));
+                        state.assembly.push_str(&fmt!(".L{}:\n", label_id));
                     }
 
                 } else {

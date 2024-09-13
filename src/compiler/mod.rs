@@ -98,8 +98,20 @@ enum Flag {
     SMALLER
 }
 
+#[macro_export]
+macro_rules! fmt {
+    ($($arg:tt)*) => {{
+        // I have no idea what I'm doing
+        let res = std::format!("; {}:{}\n{}", file!(), line!(), std::format!($($arg)*));
+        res
+    }}
+}
+pub(crate) use fmt;
+
+const USED_REGISTERS: [Register; 14] = [RAX, RBX, RCX, RDX, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15];
+
 fn get_any_free_register(state: &ScopeState) -> Option<Register> {
-    for reg in [RAX, RBX, RCX, RDX, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15] {
+    for reg in USED_REGISTERS {
         if !state.used_registers.contains_key(&reg) {
             return Some(reg);
         }
@@ -114,28 +126,31 @@ fn force_get_any_free_register(state: &mut ScopeState, protected_registers: &[Re
         let Some(oldest_temp) = state.used_registers.get_oldest(protected_registers) else { unreachable!() };
         let TempVariable::Register(reg) = oldest_temp.borrow().clone() else { unreachable!() };
         state.stack_size_current += 8;
-        state.assembly.push_str(&format!("mov QWORD [rbp - {}], {}\n", state.stack_size_current, reg_from_size(8, reg)));
+        state.assembly.push_str(&fmt!("mov QWORD [rbp - {}], {}\n", state.stack_size_current, reg_from_size(8, reg)));
         state.used_registers.remove(&reg);
         *oldest_temp.borrow_mut() = TempVariable::Stack(state.stack_size_current);
         reg
     }
 }
 
-fn free_register(state: &mut ScopeState, reg: Register) {
-    if let Some(free_reg) = get_any_free_register(state) {
-        state.assembly.push_str(&format!("mov {}, {}\n", reg_from_size(8, free_reg), reg_from_size(8, reg)));
-        if let Some(temp) = state.used_registers.remove(&reg) {
-            *temp.borrow_mut() = TempVariable::Register(free_reg);
-            state.used_registers.insert(free_reg, temp);
+fn free_register(state: &mut ScopeState, target_reg: Register, protected_registers: &[Register]) {
+    if !state.used_registers.contains_key(&target_reg) { return };
+    for free_reg in USED_REGISTERS {
+        if !protected_registers.contains(&free_reg) && !state.used_registers.contains_key(&free_reg) {
+            state.assembly.push_str(&fmt!("mov {}, {}\n", reg_from_size(8, free_reg), reg_from_size(8, target_reg)));
+            if let Some(temp) = state.used_registers.remove(&target_reg) {
+                *temp.borrow_mut() = TempVariable::Register(free_reg);
+                state.used_registers.insert(free_reg, temp);
+            }
+            return;
         }
-    } else {
-        let Some(temp) = state.used_registers.remove(&reg) else { unreachable!() };
-        let TempVariable::Register(reg) = temp.borrow().clone() else { unreachable!() };
-        state.stack_size_current += 8;
-        state.assembly.push_str(&format!("mov QWORD [rbp - {}], {}\n", state.stack_size_current, reg_from_size(8, reg)));
-        state.used_registers.remove(&reg);
-        *temp.borrow_mut() = TempVariable::Stack(state.stack_size_current);
     }
+    let Some(temp) = state.used_registers.remove(&target_reg) else { unreachable!() };
+    let TempVariable::Register(reg) = temp.borrow().clone() else { unreachable!() };
+    state.stack_size_current += 8;
+    state.assembly.push_str(&fmt!("mov QWORD [rbp - {}], {}\n", state.stack_size_current, reg_from_size(8, reg)));
+    state.used_registers.remove(&reg);
+    *temp.borrow_mut() = TempVariable::Stack(state.stack_size_current);
 }
 
 fn can_increment(data_type: &DataType) -> bool {
@@ -189,122 +204,93 @@ fn reg_from_size(size: i32, reg: Register) -> &'static str {
     }
 }
 
-fn get_function<'a>(compilation_state: &'a CompilationState, identifier: &str) -> Option<&'a FunctionPrototype> {
+fn get_function(compilation_state: &CompilationState, identifier: &str) -> Option<FunctionPrototype> {
     if let Some(function) = compilation_state.parsed_unit.functions.iter().find(|f| f.prototype.name.eq(identifier)) {
-        Some(&function.prototype)
+        Some(function.prototype.clone())
     } else {
-        compilation_state.parsed_unit.function_declarations.iter().find(|f| f.name.eq(identifier))
+        compilation_state.parsed_unit.function_declarations.iter().find(|f| f.name.eq(identifier)).cloned()
     }
 }
 
 fn compile_function_call(compilation_state: &mut CompilationState, state: &mut ScopeState, function_call: &FunctionCall) -> ExpressionResult {
-    if let Some(function) = get_function(compilation_state, &function_call.identifier) {
-        if function_call.arguments.len() != function.arguments.len() {
-            panic!("Passed wrong amoung of parameters to function \"{}\"", function.name);
-        }
-
-        let mut arguments_to_append : String = String::new();
-        let mut floats_index : i64 = function.arguments.iter().filter(|data_type| is_float(data_type)).count() as i64;
-        let mut integer_index : i64 = function.arguments.len() as i64 - floats_index;
-        
-        floats_index -= 1;
-        integer_index -= 1;
-
-        for (i, argument) in function_call.arguments.iter().enumerate().rev() {
-            let variable = state.variables.iter().rev().find(|var| var.identifier.eq(argument)).expect(&format!("Undeclared variable: \"{}\"", argument));
-            if !variable.data_type.eq(function.arguments.get(i).expect("Already checked for a number of arguments, should never happen.")) {
-                panic!("Passed argument of a wrong type!");
-            }
-
-            if is_float(&variable.data_type) {
-                if floats_index > 7 {
-                    arguments_to_append.push_str(&format!("movss xmm0, DWORD [rbp - {}]\npush xmm0\n", variable.stack_location));
-                } else {
-                    let register = match floats_index {
-                        0 => "xmm0",
-                        1 => "xmm1",
-                        2 => "xmm2",
-                        3 => "xmm3",
-                        4 => "xmm4",
-                        5 => "xmm5",
-                        6 => "xmm6",
-                        7 => "xmm7",
-                        _ => unreachable!()
-                    };
-
-                    arguments_to_append.push_str(&format!("movss {}, DWORD [rbp - {}]\n", register, variable.stack_location));
-                }
-
-                floats_index -= 1;
-            } else {
-                let instruction;
-                let register;
-                if let DataType::Array { data_type: _, size: _ } = &variable.data_type {
-                    instruction = "lea";
-                    register = "rax";
-                } else if sizeof(&variable.data_type, &compilation_state) == 8 {
-                    instruction = "mov";
-                    register = "rax";
-                } else {
-                    instruction = "movzx";
-                    register = "eax";
-                }
-
-                if integer_index > 5 {
-                    arguments_to_append.push_str(&format!("{} {}, {} [rbp - {}]\npush rax\n", instruction, register, sizeofword(&variable.data_type), variable.stack_location));
-                } else {
-                    let register = match integer_index {
-                        0 => "rdi",
-                        1 => "rsi",
-                        2 => "rax",
-                        3 => "rcx",
-                        4 => "r8",
-                        5 => "r9",
-                        _ => unreachable!()
-                    };
-                    arguments_to_append.push_str(&format!("{} {}, {} [rbp - {}]\n", instruction, register, sizeofword(&variable.data_type), variable.stack_location));
-                }
-
-                integer_index -= 1;
-            }
-        }
-
-        /* TODO: do some more inteligent saving of registers, commenting this out since I read
-         * variables from stack every time I need them anyway and I might need rax register for the
-         * return value.
-        let to_append = formatdoc!("push rax
-                                    push rdi
-                                    push rsi
-                                    push rax
-                                    push rcx
-                                    push r8
-                                    push r9
-                                    push r10
-                                    push r11
-                                    {}
-                                    call {}
-                                    pop r11
-                                    pop r10
-                                    pop r9
-                                    pop r8
-                                    pop rcx
-                                    pop rax
-                                    pop rsi
-                                    pop rdi
-                                    pop rax\n", arguments_to_append, function_call.identifier);
-        state.assembly.push_str(&to_append); */
-        state.assembly.push_str(&format!("{}call {}\n", arguments_to_append, function_call.identifier));
-        if is_float(&function.return_type) {
-            return ExpressionResult { data_type: function.return_type.clone(), result_container: ResultContainer::FloatRegister };
-        }
-        return ExpressionResult {
-            data_type: function.return_type.clone(),
-            result_container: ResultContainer::TempVariable(Rc::new(RefCell::new(TempVariable::Register(Register::RAX))))
-        };
-    } else {
-        panic!("Cannot find function with a name \"{}\"", function_call.identifier);
+    let Some(function) = get_function(compilation_state, &function_call.identifier) else { panic!("Cannot find function \"{}\"", function_call.identifier) };
+    if function_call.arguments.len() != function.arguments.len() {
+        panic!("Passed wrong amoung of parameters to function \"{}\"", function.name);
     }
 
+    const SCRATCH_REGS: [Register; 9] = [RDI, RSI, RDX, RCX, R8, R9, RAX, R10, R11];
+
+    let floats_index = function.arguments.iter().filter(|data_type| is_float(data_type)).count();
+    let mut integer_amount = function.arguments.len() - floats_index;
+    let mut integer_index = integer_amount;
+
+    let results: Vec<ExpressionResult> =  function_call.arguments.iter().enumerate().rev().map(|(i, argument)| {
+        let data_type = function.arguments.get(i).expect("Already checked for a number of arguments, should never happen.").clone();
+        let result = expression::compile_expression(state, compilation_state, argument); //TODO: add a hint where result should be
+
+        if result.data_type != data_type {
+            panic!("Passed argument of a wrong type!");
+        }
+        result
+    }).collect();
+
+    for result in results.iter() {
+        if is_float(&result.data_type) {
+            //floats_index -= 1;
+            todo!();
+        } else {
+            integer_index -= 1;
+            if integer_index > 5 {
+                if let ResultContainer::TempVariable(temp) = &result.result_container {
+                    if let TempVariable::Register(reg) = temp.borrow().clone() {
+                        state.assembly.push_str(&fmt!("push {}\n", reg_from_size(8, reg)));
+                        state.used_registers.remove(&reg);
+                    } else {
+                        todo!();
+                    }
+                } else {
+                    todo!();
+                }
+            } else {
+                let target_reg = match integer_index {
+                    0 => RDI,
+                    1 => RSI,
+                    2 => RDX,
+                    3 => RCX,
+                    4 => R8,
+                    5 => R9,
+                    _ => unreachable!()
+                };
+                if let ResultContainer::TempVariable(temp) = &result.result_container {
+                    let TempVariable::Register(reg) = temp.borrow().clone() else { todo!() };
+                    if reg != target_reg {
+                        free_register(state, target_reg, &SCRATCH_REGS);
+                        state.assembly.push_str(&fmt!("mov {}, {}\n", reg_from_size(8, target_reg), reg_from_size(8, reg)));
+                    }
+
+                } else {
+                    todo!();
+                }
+            }
+        }
+    }
+
+    if integer_amount > 5 {
+        integer_amount = 5;
+    }
+
+    for i in integer_amount..SCRATCH_REGS.len() {
+        free_register(state, SCRATCH_REGS[i], &SCRATCH_REGS);
+    }
+
+    state.assembly.push_str(&fmt!("call {}\n", function_call.identifier));
+    if is_float(&function.return_type) {
+        return ExpressionResult { data_type: function.return_type.clone(), result_container: ResultContainer::FloatRegister };
+    }
+    return ExpressionResult {
+        data_type: function.return_type.clone(),
+        result_container: ResultContainer::TempVariable(Rc::new(RefCell::new(TempVariable::Register(Register::RAX))))
+    };
 }
 
 fn is_float(data_type: &DataType) -> bool {
@@ -335,12 +321,12 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
     }
 
     for function_declaration in parsed_unit.function_declarations.iter() {
-        compilation_state.assembly.push_str(&format!("extern {}\n", function_declaration.name));
+        compilation_state.assembly.push_str(&fmt!("extern {}\n", function_declaration.name));
     }
 
     for function in parsed_unit.functions.iter() {
         if function.public {
-            compilation_state.assembly.push_str(&format!("global {}\n", function.prototype.name));
+            compilation_state.assembly.push_str(&fmt!("global {}\n", function.prototype.name));
         }
         //TODO: make compile_scope return information about used registries and only push those.
         //Use scratch registries only if possible.
@@ -353,7 +339,7 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
                                 push r15
                                 push rbp
                                 mov rbp, rsp\n", function.prototype.name);*/
-        compilation_state.assembly.push_str(&format!("{}:\npush rbp\nmov rbp, rsp\n", function.prototype.name));
+        compilation_state.assembly.push_str(&fmt!("{}:\npush rbp\nmov rbp, rsp\n", function.prototype.name));
         let mut variables = Vec::new();
         let mut scope_state = ScopeState {
             iter: function.body.iter().peekable(),
@@ -365,7 +351,7 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
             used_registers: RegMap::new()
         };
         compile_scope(&mut scope_state, &mut compilation_state);
-        compilation_state.assembly.push_str(&format!("sub rsp, {}\n", ((scope_state.max_stack_size + 15) / 16) * 16)); // align the stack frame to 2 bytes
+        compilation_state.assembly.push_str(&fmt!("sub rsp, {}\n", ((scope_state.max_stack_size + 15) / 16) * 16)); // align the stack frame to 2 bytes
         compilation_state.assembly.push_str(&scope_state.assembly);
         /*
         to_append = formatdoc!(".{}.end:
@@ -377,15 +363,15 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
                             pop r12
                             pop rbx
                             ret\n", function.prototype.name); */
-        compilation_state.assembly.push_str(&format!(".{}.end:\nmov rsp, rbp\npop rbp\nret\n", function.prototype.name));
+        compilation_state.assembly.push_str(&fmt!(".{}.end:\nmov rsp, rbp\npop rbp\nret\n", function.prototype.name));
     }
 
     for (text, id) in compilation_state.string_constants {
-        compilation_state.assembly.insert_str(0, &format!(".String{}: db '{}', 0\n", id, text));
+        compilation_state.assembly.insert_str(0, &fmt!(".String{}: db '{}', 0\n", id, text));
     }
 
     for (text, id) in compilation_state.float_constants {
-        compilation_state.assembly.insert_str(0, &format!(".Float{}: dd {}\n", id, text));
+        compilation_state.assembly.insert_str(0, &fmt!(".Float{}: dd {}\n", id, text));
     }
 
     return compilation_state.assembly;

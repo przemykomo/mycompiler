@@ -2,13 +2,13 @@ use std::{cell::RefCell, rc::Rc};
 
 use super::{Register, TempVariable};
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct TempEntry {
     reg: Register,
     temp: Rc<RefCell<TempVariable>>
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct RegMap {
     //map: HashMap<Register, Rc<RefCell<TempVariable>>>
     values: Vec<TempEntry>

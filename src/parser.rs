@@ -61,7 +61,7 @@ pub enum Statement {
 #[derive(Debug)]
 pub struct FunctionCall {
     pub identifier: String,
-    pub arguments: Vec<String>
+    pub arguments: Vec<Expression>
 }
 
 #[derive(Debug)]
@@ -71,7 +71,7 @@ pub struct FunctionDefinition {
     pub body: Vec<Statement>
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FunctionPrototype {
     pub name: String,
     pub return_type: DataType,
@@ -109,15 +109,11 @@ pub fn parse_arguments_declaration(iter: &mut Peekable<Iter<Token>>) -> Vec<Data
     return arguments;
 }
 
-pub fn parse_arguments_passing(iter: &mut Peekable<Iter<Token>>) -> Vec<String> {
-    let mut arguments = Vec::<String>::new();
+pub fn parse_arguments_passing(iter: &mut Peekable<Iter<Token>>) -> Vec<Expression> {
+    let mut arguments = Vec::<Expression>::new();
 
     loop {
-        if let Some(Token::Identifier(identifier)) = iter.next() {
-            arguments.push(identifier.clone());
-        } else {
-            panic!("Expected an identifier as a function parameter!");
-        }
+        arguments.push(parse_expression(iter));
 
         if let Some(Token::Coma) = iter.peek() {
             iter.next();

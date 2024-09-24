@@ -101,14 +101,13 @@ enum Flag {
 #[macro_export]
 macro_rules! fmt {
     ($($arg:tt)*) => {{
-        // I have no idea what I'm doing
         let res = std::format!("; {}:{}\n{}", file!(), line!(), std::format!($($arg)*));
         res
     }}
 }
 pub(crate) use fmt;
 
-const USED_REGISTERS: [Register; 14] = [RAX, RBX, RCX, RDX, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15];
+const USED_REGISTERS: [Register; 14] = [R15, R14, R13, R12, R11, R10, RBX, RAX, R9, R8, RCX, RDX, RSI, RDI];
 
 fn get_any_free_register(state: &ScopeState) -> Option<Register> {
     for reg in USED_REGISTERS {
@@ -119,7 +118,12 @@ fn get_any_free_register(state: &ScopeState) -> Option<Register> {
     return None;
 }
 
-fn force_get_any_free_register(state: &mut ScopeState, protected_registers: &[Register]) -> Register {
+fn force_get_any_free_register(state: &mut ScopeState, protected_registers: &[Register], hint: Option<Register>) -> Register {
+    if let Some(reg) = hint {
+        if !state.used_registers.contains_key(&reg) {
+            return reg;
+        }
+    }
     if let Some(reg) = get_any_free_register(state) {
         reg
     } else {
@@ -226,7 +230,7 @@ fn compile_function_call(compilation_state: &mut CompilationState, state: &mut S
 
     let results: Vec<ExpressionResult> =  function_call.arguments.iter().enumerate().rev().map(|(i, argument)| {
         let data_type = function.arguments.get(i).expect("Already checked for a number of arguments, should never happen.").clone();
-        let result = expression::compile_expression(state, compilation_state, argument); //TODO: add a hint where result should be
+        let result = expression::compile_expression(state, compilation_state, argument, if i <= 5 { Some(SCRATCH_REGS[i]) } else { None });
 
         if result.data_type != data_type {
             panic!("Passed argument of a wrong type!");
@@ -275,8 +279,8 @@ fn compile_function_call(compilation_state: &mut CompilationState, state: &mut S
         }
     }
 
-    if integer_amount > 5 {
-        integer_amount = 5;
+    if integer_amount > 6 {
+        integer_amount = 6;
     }
 
     for i in integer_amount..SCRATCH_REGS.len() {

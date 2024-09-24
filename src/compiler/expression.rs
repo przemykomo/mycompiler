@@ -4,17 +4,17 @@ use std::rc::Rc;
 
 use super::*;
 
-pub fn compile_expression(state: &mut ScopeState, compilation_state: &mut CompilationState, expression: &Expression) -> ExpressionResult {
+pub fn compile_expression(state: &mut ScopeState, compilation_state: &mut CompilationState, expression: &Expression, result_hint: Option<Register>) -> ExpressionResult {
     match expression {
         Expression::IntLiteral(value) => {
-            let reg = force_get_any_free_register(state, &[]);
+            let reg = force_get_any_free_register(state, &[], result_hint);
             state.assembly.push_str(&fmt!("mov {}, {}\n", reg_from_size(8, reg), value));
             let temp = Rc::new(RefCell::new(TempVariable::Register(reg)));
             state.used_registers.insert(reg, temp.clone());
             ExpressionResult { data_type: DataType::Int, result_container: ResultContainer::TempVariable(temp) }
         },
         Expression::CharacterLiteral(c) => {
-            let reg = force_get_any_free_register(state, &[]);
+            let reg = force_get_any_free_register(state, &[], result_hint);
             state.assembly.push_str(&fmt!("mov {}, {}\n", reg_from_size(1, reg), c));
             let temp = Rc::new(RefCell::new(TempVariable::Register(reg)));
             state.used_registers.insert(reg, temp.clone());
@@ -28,7 +28,7 @@ pub fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compil
             let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier)).expect(&fmt!("Undeclared variable: \"{}\"", identifier));
             if let DataType::Array { data_type: _, size: _ } = variable.data_type.clone() {
                 //let stack_location = variable.stack_location.clone();
-                let result = compile_expression(state, compilation_state, element);
+                let result = compile_expression(state, compilation_state, element, None);
                 if result.data_type != DataType::Int {
                     panic!("Array index must be an integer!");
                 }
@@ -38,9 +38,9 @@ pub fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compil
             }
         },
         Expression::ArithmeticExpression { left, right, operator } => {
-            let right_result = compile_expression(state, compilation_state, right);
+            let right_result = compile_expression(state, compilation_state, right, None);
             let right_result = move_to_reg_if_needed(state, right_result);
-            let left_result = compile_expression(state, compilation_state, left);
+            let left_result = compile_expression(state, compilation_state, left, result_hint);
             let left_result = move_to_reg_if_needed(state, left_result);
 
             if !left_result.data_type.eq(&right_result.data_type) {
@@ -91,9 +91,9 @@ pub fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compil
             }
         },
         Expression::ComparisonExpression { left, right, operator } => {
-            let right_result = compile_expression(state, compilation_state, right);
+            let right_result = compile_expression(state, compilation_state, right, None);
             let right_result = move_to_reg_if_needed(state, right_result);
-            let left_result = compile_expression(state, compilation_state, left);
+            let left_result = compile_expression(state, compilation_state, left, None);
             let left_result = move_to_reg_if_needed(state, left_result);
             if right_result.data_type != left_result.data_type {
                 panic!("Cannot compare different data types!");
@@ -117,7 +117,7 @@ pub fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compil
             }
         },
         Expression::Dereference(expression) => {
-            let result = compile_expression(state, compilation_state, expression);
+            let result = compile_expression(state, compilation_state, expression, result_hint);
             let result = move_to_reg_if_needed(state, result);
             let ResultContainer::TempVariable(temp) = result.result_container else { unreachable!() };
             let TempVariable::Register(reg) = temp.borrow().clone() else { unreachable!() };
@@ -131,10 +131,10 @@ pub fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compil
             }
         },
         Expression::AddressOf(expression) => {
-            let result = compile_expression(state, compilation_state, expression);
+            let result = compile_expression(state, compilation_state, expression, None);
 
             if let ResultContainer::IdentifierWithOffset { identifier, offset } = result.result_container {
-                let reg = force_get_any_free_register(state, &[]);
+                let reg = force_get_any_free_register(state, &[], result_hint);
                 let variable = state.variables.iter().rev().find(|var| var.identifier.eq(&identifier)).expect(&fmt!("Undeclared variable: \"{}\"", identifier));
                 state.assembly.push_str(&fmt!("lea {}, [rbp - {}]\n", reg_from_size(8, reg), variable.stack_location - offset));
                 ExpressionResult { data_type: DataType::Pointer(Box::new(variable.data_type.clone())), result_container: ResultContainer::TempVariable(Rc::new(RefCell::new(TempVariable::Register(reg)))) }
@@ -150,7 +150,7 @@ pub fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compil
                 id = compilation_state.string_constants.len();
                 compilation_state.string_constants.insert(text.clone(), id);
             }
-            let reg = force_get_any_free_register(state, &[]);
+            let reg = force_get_any_free_register(state, &[], result_hint);
             state.assembly.push_str(&fmt!("lea {}, [.String{}]\n", reg_from_size(8, reg), id));
             ExpressionResult { data_type: DataType::Pointer(Box::new(DataType::Char)), result_container: ResultContainer::TempVariable(Rc::new(RefCell::new(TempVariable::Register(reg)))) }
         },
@@ -158,7 +158,7 @@ pub fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compil
             compile_function_call(compilation_state, state, function_call)
         },
         Expression::BoolLiteral(value) => {
-            let reg = force_get_any_free_register(state, &[]);
+            let reg = force_get_any_free_register(state, &[], result_hint);
             state.assembly.push_str(&fmt!("mov {}, {}\n", reg_from_size(8, reg), *value as i32));
             ExpressionResult { data_type: DataType::Boolean, result_container: ResultContainer::TempVariable(Rc::new(RefCell::new(TempVariable::Register(reg)))) }
         },
@@ -174,8 +174,8 @@ pub fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compil
             ExpressionResult { data_type: DataType::Float, result_container: ResultContainer::FloatRegister }
         }
         Expression::Assigment { left, right } => {
-            let left_result = compile_expression(state, compilation_state, left);
-            let right_result = compile_expression(state, compilation_state, right);
+            let left_result = compile_expression(state, compilation_state, left, None);
+            let right_result = compile_expression(state, compilation_state, right, None);
             let right_result = move_to_reg_if_needed(state, right_result);
             let ResultContainer::TempVariable(ref temp) = right_result.result_container else { unreachable!() };
             let TempVariable::Register(reg) = temp.borrow().clone() else { unreachable!() };
@@ -214,7 +214,7 @@ pub fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compil
             }
         }
         Expression::MemberAccess { left, right } => {
-            let left = compile_expression(state, compilation_state, left);
+            let left = compile_expression(state, compilation_state, left, None);
 
             if let DataType::Struct(left_identifier) = left.data_type {
                 if let ResultContainer::IdentifierWithOffset { identifier, offset } = left.result_container {

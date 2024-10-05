@@ -265,15 +265,20 @@ fn compile_function_call(compilation_state: &mut CompilationState, state: &mut S
                     5 => R9,
                     _ => unreachable!()
                 };
-                if let ResultContainer::TempVariable(temp) = &result.result_container {
-                    let TempVariable::Register(reg) = temp.borrow().clone() else { todo!() };
-                    if reg != target_reg {
+                match &result.result_container {
+                    ResultContainer::TempVariable(temp) => {
+                        let TempVariable::Register(reg) = temp.borrow().clone() else { todo!() };
+                        if reg != target_reg {
+                            free_register(state, target_reg, &SCRATCH_REGS);
+                            state.assembly.push_str(&fmt!("mov {}, {}\n", reg_from_size(8, target_reg), reg_from_size(8, reg)));
+                        }
+                    },
+                    ResultContainer::IdentifierWithOffset { identifier, offset } => {
                         free_register(state, target_reg, &SCRATCH_REGS);
-                        state.assembly.push_str(&fmt!("mov {}, {}\n", reg_from_size(8, target_reg), reg_from_size(8, reg)));
-                    }
-
-                } else {
-                    todo!();
+                        let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier)).expect(&fmt!("Undeclared variable: \"{}\"", identifier));
+                        state.assembly.push_str(&fmt!("mov {}, [rbp - {}]\n", reg_from_size(8, target_reg), variable.stack_location - offset));
+                    },
+                    _ => todo!("{:?}", result.result_container)
                 }
             }
         }

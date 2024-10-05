@@ -1,7 +1,11 @@
-void other(int a, int b, int c, int d, int e, int f, int g, int h, int i);
+void other(int a);
 
 public int main() {
-    other(1, 2, 3, 4, 5, 6, 7, 8, 9);
+    int a = 0;
+    while (a < 5) {
+        a = a + 1;
+        other(a);
+    }
 
     return 0;
 }

@@ -126,6 +126,41 @@ pub fn compile_scope(state: &mut ScopeState, compilation_state: &mut Compilation
                     todo!();
                 }
             },
+            Statement::While { expression, scope } => {
+                let begin_label_id = compilation_state.unique_label_id;
+                compilation_state.unique_label_id += 1;
+                state.assembly.push_str(&fmt!(".L{}:\n", begin_label_id));
+
+                let result = compile_expression(state, compilation_state, expression, None);
+
+                if result.data_type != DataType::Boolean {
+                    panic!("While statement condition has to be a boolean!");
+                }
+
+                if let ResultContainer::Flag(flag) = result.result_container {
+                    let end_label_id = compilation_state.unique_label_id;
+                    compilation_state.unique_label_id += 1;
+                    state.assembly.push_str(&fmt!("{} .L{}\n", jump_instruction_from_negated_flag(&flag), end_label_id));
+
+                    let variables_len = state.variables.len();
+                    let mut scope_state = ScopeState {
+                        iter: scope.iter().peekable(),
+                        stack_size_current: state.stack_size_current,
+                        max_stack_size: state.stack_size_current,
+                        variables: state.variables,
+                        current_function: state.current_function,
+                        assembly: String::new(),
+                        used_registers: state.used_registers.clone()
+                    };
+                    compile_scope(&mut scope_state, compilation_state);
+                    state.max_stack_size = state.max_stack_size.max(scope_state.max_stack_size);
+                    state.assembly.push_str(&scope_state.assembly);
+                    state.assembly.push_str(&fmt!("jmp .L{}\n.L{}:\n", begin_label_id, end_label_id));
+                    state.variables.truncate(variables_len);
+                } else {
+                    todo!();
+                }
+            },
             Statement::Expression(expression) => {
                 let _ = compile_expression(state, compilation_state, expression, None);
             }

@@ -55,7 +55,8 @@ pub enum Statement {
     Decrement(String),
     If { expression: Expression, scope: Vec<Statement>, else_scope: Option<Vec<Statement>> },
     Return(Expression),
-    Expression(Expression)
+    Expression(Expression),
+    While { expression: Expression, scope: Vec<Statement> }
 }
 
 #[derive(Debug)]
@@ -308,6 +309,20 @@ pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
                     panic!("Expected parenthesis after an if token!");
                 }
             },
+            Token::While => {
+                iter.next();
+                if let Some(Token::ParenthesisOpen) = iter.next() {
+                    let expression = parse_expression(iter);
+                    if let Some((Token::ParenthesisClose, Token::CurlyBracketOpen)) = iter.next_tuple() {
+                        let scope = parse_scope(iter);
+                        abstract_syntax_tree.push(Statement::While { expression, scope });
+                    } else {
+                        panic!("Expected closed parenthesis and opened curly brackets in the while statement!");
+                    }
+                } else {
+                    panic!("Expected parenthesis after a while token!");
+                }
+            },
             Token::CurlyBracketClose => {
                 iter.next();
                 return abstract_syntax_tree;
@@ -333,7 +348,7 @@ fn parse_expression(iter: &mut Peekable<Iter<Token>>) -> Expression {
 }
 
 fn parse_assigment(iter: &mut Peekable<Iter<Token>>) -> Expression {
-    let mut left = parse_addition(iter);
+    let mut left = parse_relational(iter);
 
     match iter.peek() {
         Some(Token::EqualSign) => {

@@ -31,7 +31,8 @@ pub enum Token {
     Coma,
     Return,
     Struct,
-    Period
+    Period,
+    While
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -83,6 +84,7 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
                     "true" => Token::BoolLiteral(true),
                     "false" => Token::BoolLiteral(false),
                     "struct" => Token::Struct,
+                    "while" => Token::While,
                     _ => Token::Identifier(buffer)
                 });
         } else if c.is_ascii_digit() || c == '-' {

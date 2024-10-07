@@ -19,7 +19,8 @@ pub enum Expression {
     FunctionCall(FunctionCall),
     Assigment { left: Box<Expression>, right: Box<Expression> },
     MemberAccess { left: Box<Expression>, right: Box<Expression> },
-    Increment(Box<Expression>)
+    Increment(Box<Expression>),
+    Decrement(Box<Expression>)
 }
 
 #[derive(Debug)]
@@ -492,6 +493,13 @@ fn parse_atom(iter: &mut Peekable<Iter<Token>>) -> Expression {
         Some(Token::PlusSign) => {
             if let Some((Token::PlusSign, Token::Identifier(identifier))) = iter.next_tuple() {
                 Expression::Increment(Box::new(parse_identifier(iter, identifier.clone())))
+            } else {
+                panic!("Expected increment operator");
+            }
+        },
+        Some(Token::MinusSign) => {
+            if let Some((Token::MinusSign, Token::Identifier(identifier))) = iter.next_tuple() {
+                Expression::Decrement(Box::new(parse_identifier(iter, identifier.clone())))
             } else {
                 panic!("Expected increment operator");
             }

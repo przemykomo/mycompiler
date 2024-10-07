@@ -172,7 +172,7 @@ pub fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compil
             }
             state.assembly.push_str(&fmt!("movss xmm0, DWORD [.Float{}]\n", id));
             ExpressionResult { data_type: DataType::Float, result_container: ResultContainer::FloatRegister }
-        }
+        },
         Expression::Assigment { left, right } => {
             let left_result = compile_expression(state, compilation_state, left, None);
             let right_result = compile_expression(state, compilation_state, right, None);
@@ -212,7 +212,7 @@ pub fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compil
             } else {
                 panic!("Trying to assign value to rvalue!");
             }
-        }
+        },
         Expression::MemberAccess { left, right } => {
             let left = compile_expression(state, compilation_state, left, None);
 
@@ -235,7 +235,7 @@ pub fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compil
             } else {
                 panic!("Member access operator used on a non-struct variable!");
             }
-        }
+        },
         Expression::Increment(expression) => {
             let result = compile_expression(state, compilation_state, expression, None);
             
@@ -251,9 +251,26 @@ pub fn compile_expression(state: &mut ScopeState, compilation_state: &mut Compil
 
                 result
             } else {
-                panic!("Trying to assign value to rvalue!");
+                panic!("Trying to increment an rvalue!");
             }
+        },
+        Expression::Decrement(expression) => {
+            let result = compile_expression(state, compilation_state, expression, None);
+            
+            if let ExpressionResult { ref data_type, result_container: ResultContainer::IdentifierWithOffset { ref identifier, offset } } = result {
+                let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier)).expect(&fmt!("Undeclared variable: \"{}\"", &identifier));
+                let stack_location = variable.stack_location.clone();
 
+                if is_float(&data_type) {
+                    todo!();
+                } else {
+                    state.assembly.push_str(&fmt!("sub {} [rbp - {}], 1\n", sizeofword(&data_type), stack_location - offset));
+                }
+
+                result
+            } else {
+                panic!("Trying to decrement an rvalue!");
+            }
         }
     }
 }

@@ -18,7 +18,8 @@ pub enum Expression {
     ArraySubscript { identifier: String, element: Box<Expression> },
     FunctionCall(FunctionCall),
     Assigment { left: Box<Expression>, right: Box<Expression> },
-    MemberAccess { left: Box<Expression>, right: Box<Expression> }
+    MemberAccess { left: Box<Expression>, right: Box<Expression> },
+    Increment(Box<Expression>)
 }
 
 #[derive(Debug)]
@@ -479,34 +480,7 @@ fn parse_member_access(iter: &mut Peekable<Iter<Token>>) -> Expression {
 
 fn parse_atom(iter: &mut Peekable<Iter<Token>>) -> Expression {
     match iter.next() {
-        Some(Token::Identifier(identifier)) => {
-            match iter.peek() {
-                Some(Token::SquareParenthesisOpen) => {
-                    iter.next();
-                    let expression = parse_expression(iter);
-                    let Some(Token::SquareParenthesisClose) = iter.next() else {
-                        panic!("Expected closed square parenthesis.");
-                    };
-                    Expression::ArraySubscript { identifier: identifier.clone(), element: Box::new(expression) }
-                },
-                Some(Token::ParenthesisOpen) => {
-                    iter.next();
-
-                    let arguments = if let Some(Token::ParenthesisClose) = iter.peek() {
-                        Vec::new()
-                    } else {
-                        parse_arguments_passing(iter)
-                    };
-                    
-                    if let Some(Token::ParenthesisClose) = iter.next() {
-                        Expression::FunctionCall(FunctionCall { identifier: identifier.clone() , arguments })
-                    } else {
-                        panic!("Expected ')' at the end of function call.");
-                    }
-                },
-                _ => Expression::Identifier(identifier.clone()),
-            }
-        },
+        Some(Token::Identifier(identifier)) => parse_identifier(iter, identifier.clone()),
         Some(Token::ParenthesisOpen) => {
             let expression = parse_expression(iter);
             if let Some(Token::ParenthesisClose) = iter.next() {
@@ -515,8 +489,44 @@ fn parse_atom(iter: &mut Peekable<Iter<Token>>) -> Expression {
                 panic!("Expected closing parenthesis.");
             }
         },
+        Some(Token::PlusSign) => {
+            if let Some((Token::PlusSign, Token::Identifier(identifier))) = iter.next_tuple() {
+                Expression::Increment(Box::new(parse_identifier(iter, identifier.clone())))
+            } else {
+                panic!("Expected increment operator");
+            }
+        },
         _ => {
             panic!("Expected an identifier or parenthesis.");
         }
+    }
+}
+
+fn parse_identifier(iter: &mut Peekable<Iter<Token>>, identifier: String) -> Expression {
+    match iter.peek() {
+        Some(Token::SquareParenthesisOpen) => {
+            iter.next();
+            let expression = parse_expression(iter);
+            let Some(Token::SquareParenthesisClose) = iter.next() else {
+                panic!("Expected closed square parenthesis.");
+            };
+            Expression::ArraySubscript { identifier, element: Box::new(expression) }
+        },
+        Some(Token::ParenthesisOpen) => {
+            iter.next();
+
+            let arguments = if let Some(Token::ParenthesisClose) = iter.peek() {
+                Vec::new()
+            } else {
+                parse_arguments_passing(iter)
+            };
+            
+            if let Some(Token::ParenthesisClose) = iter.next() {
+                Expression::FunctionCall(FunctionCall { identifier, arguments })
+            } else {
+                panic!("Expected ')' at the end of function call.");
+            }
+        },
+        _ => Expression::Identifier(identifier.clone()),
     }
 }

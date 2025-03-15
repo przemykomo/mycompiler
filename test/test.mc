@@ -1,10 +1,9 @@
 void other(int a);
 
 public int main() {
-    int a = 0;
-    while (a > -5) {
-        --a;
-        other(a);
+
+    for (int i = 0; i < 5; ++i) {
+        other(i);
     }
 
     return 0;

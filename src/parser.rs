@@ -20,7 +20,8 @@ pub enum Expression {
     Assigment { left: Box<Expression>, right: Box<Expression> },
     MemberAccess { left: Box<Expression>, right: Box<Expression> },
     Increment(Box<Expression>),
-    Decrement(Box<Expression>)
+    Decrement(Box<Expression>),
+    VariableDefinition { identifier: String, expression: Option<Box<Expression>>, data_type: DataType }
 }
 
 #[derive(Debug)]
@@ -52,13 +53,11 @@ pub enum ComparisonOperator {
 
 #[derive(Debug)]
 pub enum Statement {
-    VariableDefinition { identifier: String, expression: Option<Expression>, data_type: DataType },
-    Increment(String),
-    Decrement(String),
     If { expression: Expression, scope: Vec<Statement>, else_scope: Option<Vec<Statement>> },
     Return(Expression),
     Expression(Expression),
-    While { expression: Expression, scope: Vec<Statement> }
+    While { expression: Expression, scope: Vec<Statement> },
+    For { inital_statement: Box<Statement>, condition_expr: Expression, iteration_expr: Expression, scope: Vec<Statement> }
 }
 
 #[derive(Debug)]
@@ -325,6 +324,24 @@ pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
                     panic!("Expected parenthesis after a while token!");
                 }
             },
+            Token::For => {
+                iter.next();
+                if let Some(Token::ParenthesisOpen) = iter.next() {
+                    todo!();
+                    //let initial_expr = parse_(iter);
+                    let Some(Token::Semicolon) = iter.next() else { panic!("Expected semicolon!") };
+                    let condition_expr = parse_expression(iter);
+                    let Some(Token::Semicolon) = iter.next() else { panic!("Expected semicolon!") };
+                    let iteration_expr = parse_expression(iter);
+                    let Some(Token::Semicolon) = iter.next() else { panic!("Expected semicolon!") };
+                    if let Some((Token::ParenthesisClose, Token::CurlyBracketOpen)) = iter.next_tuple() {
+                    let scope = parse_scope(iter);
+                    //abstract_syntax_tree.push(Statement::For { initial_expr, condition_expr, iteration_expr, scope });
+                    } else {
+                        panic!("Expected closed parenthesis and opened curly brackets in the for statement!");
+                    }
+                }
+            },
             Token::CurlyBracketClose => {
                 iter.next();
                 return abstract_syntax_tree;
@@ -504,8 +521,8 @@ fn parse_atom(iter: &mut Peekable<Iter<Token>>) -> Expression {
                 panic!("Expected increment operator");
             }
         },
-        _ => {
-            panic!("Expected an identifier or parenthesis.");
+        other => {
+            panic!("Expected an identifier or parenthesis, got: {:?}", other);
         }
     }
 }

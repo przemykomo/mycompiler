@@ -20,8 +20,7 @@ pub enum Expression {
     Assigment { left: Box<Expression>, right: Box<Expression> },
     MemberAccess { left: Box<Expression>, right: Box<Expression> },
     Increment(Box<Expression>),
-    Decrement(Box<Expression>),
-    VariableDefinition { identifier: String, expression: Option<Box<Expression>>, data_type: DataType }
+    Decrement(Box<Expression>)
 }
 
 #[derive(Debug)]
@@ -57,7 +56,8 @@ pub enum Statement {
     Return(Expression),
     Expression(Expression),
     While { expression: Expression, scope: Vec<Statement> },
-    For { inital_statement: Box<Statement>, condition_expr: Expression, iteration_expr: Expression, scope: Vec<Statement> }
+    For { inital_statement: Box<Statement>, condition_expr: Expression, iteration_expr: Expression, scope: Vec<Statement> },
+    VariableDefinition { identifier: String, expression: Option<Box<Expression>>, data_type: DataType }
 }
 
 #[derive(Debug)]
@@ -215,8 +215,8 @@ pub fn parse(tokens: &Vec<Token>) -> ParsedUnit {
                     panic!("Syntax error while paring a public function signature.");
                 }
             },
-            _ => {
-                panic!("Syntax error.");
+            token => {
+                panic!("Unexpected token \'{:?}\'.", token);
             }
         }
     }
@@ -224,23 +224,22 @@ pub fn parse(tokens: &Vec<Token>) -> ParsedUnit {
     return parsed_unit;
 }
 
-fn parse_variable_definition(iter: &mut Peekable<Iter<Token>>, abstract_syntax_tree: &mut Vec<Statement>, data_type: &DataType) {
+fn parse_variable_definition(iter: &mut Peekable<Iter<Token>>, data_type: &DataType) -> Statement {
     match iter.next() {
         Some(Token::Identifier(identifier)) => {
-                let my_expression: Option<Expression>;
+                let my_expression: Option<Box<Expression>>;
                 match iter.next() {
                     Some(Token::EqualSign) => {
-                        my_expression = Some(parse_expression(iter));
+                        my_expression = Some(Box::new(parse_expression(iter)));
                     },
                     Some(Token::Semicolon) => {
                         my_expression = None;
                     },
                     token => {
-                        dbg!(abstract_syntax_tree);
                         panic!("Unexpected token \'{:?}\'.", token);
                     }
             }
-            abstract_syntax_tree.push(Statement::VariableDefinition { identifier: identifier.clone(), expression: my_expression, data_type: data_type.clone() });
+            Statement::VariableDefinition { identifier: identifier.clone(), expression: my_expression, data_type: data_type.clone() }
         },
         token => {
             panic!("Unexpected token \'{:?}\'.", token);
@@ -248,42 +247,43 @@ fn parse_variable_definition(iter: &mut Peekable<Iter<Token>>, abstract_syntax_t
     }
 }
 
-fn parse_variable_definition_with_data_type(abstract_syntax_tree: &mut Vec<Statement>, data_type: &DataType, iter: &mut Peekable<Iter<Token>>) {
+fn parse_variable_definition_with_data_type(data_type: &DataType, iter: &mut Peekable<Iter<Token>>) -> Statement {
     match iter.peek() {
         Some(Token::SquareParenthesisOpen) => {
             iter.next();
             if let Some((Token::IntLiteral(size), Token::SquareParenthesisClose)) = iter.next_tuple() {
-                parse_variable_definition(iter, abstract_syntax_tree, &DataType::Array { data_type: Box::new(data_type.clone()), size: *size });
+                parse_variable_definition(iter, &DataType::Array { data_type: Box::new(data_type.clone()), size: *size })
             } else {
                 panic!("Expected an int literal in an array definition!");
             }
         },
         Some(Token::MultiplySign) => {
             iter.next();
-            parse_variable_definition(iter, abstract_syntax_tree, &DataType::Pointer(Box::new(data_type.clone())));
+            parse_variable_definition(iter, &DataType::Pointer(Box::new(data_type.clone())))
         },
         _ => {
-            parse_variable_definition(iter, abstract_syntax_tree, data_type);
+            parse_variable_definition(iter, data_type)
         }
     }
 }
 
 pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
-    let mut abstract_syntax_tree = Vec::<Statement>::new();
+    let mut ast = Vec::<Statement>::new();
 
     while let Some(token) = iter.peek() {
         match token {
             Token::DataType(data_type) => {
                 iter.next();
-                parse_variable_definition_with_data_type(&mut abstract_syntax_tree, data_type, iter);
+                ast.push(parse_variable_definition_with_data_type(data_type, iter));
             },
             Token::Identifier(_struct_name) => {
                 let mut iter_clone = iter.clone();
                 if let Some((Token::Identifier(struct_name), Token::Identifier(_identifier))) = iter_clone.next_tuple() {
-                    iter.next();
-                    parse_variable_definition_with_data_type(&mut abstract_syntax_tree, &DataType::Struct(struct_name.clone()), iter);
+                    dbg!(iter.next());
+                    //iter.next();
+                    ast.push(parse_variable_definition_with_data_type(&DataType::Struct(struct_name.clone()), iter));
                 } else {
-                    abstract_syntax_tree.push(Statement::Expression(parse_expression(iter)));
+                    ast.push(Statement::Expression(parse_expression(iter)));
                 }
             },
             Token::If => {
@@ -302,7 +302,7 @@ pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
                         } else {
                             None
                         };
-                        abstract_syntax_tree.push(Statement::If { expression, scope, else_scope });
+                        ast.push(Statement::If { expression, scope, else_scope });
                     } else {
                         panic!("Expected closed parenthesis and opened curly brackets in the if statement!");
                     }
@@ -316,7 +316,7 @@ pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
                     let expression = parse_expression(iter);
                     if let Some((Token::ParenthesisClose, Token::CurlyBracketOpen)) = iter.next_tuple() {
                         let scope = parse_scope(iter);
-                        abstract_syntax_tree.push(Statement::While { expression, scope });
+                        ast.push(Statement::While { expression, scope });
                     } else {
                         panic!("Expected closed parenthesis and opened curly brackets in the while statement!");
                     }
@@ -344,17 +344,17 @@ pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec::<Statement> {
             },
             Token::CurlyBracketClose => {
                 iter.next();
-                return abstract_syntax_tree;
+                return ast;
             },
             Token::Return => {
                 iter.next();
-                abstract_syntax_tree.push(Statement::Return(parse_expression(iter)));
+                ast.push(Statement::Return(parse_expression(iter)));
             },
             Token::Semicolon => {
                 iter.next();
             },
             _ => {
-                abstract_syntax_tree.push(Statement::Expression(parse_expression(iter)));
+                ast.push(Statement::Expression(parse_expression(iter)));
             }
         }
     }

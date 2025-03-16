@@ -1,10 +1,17 @@
 void other(int a);
 
-public int main() {
+struct mystruct {
+    int a,
+    int b
+}
 
-    for (int i = 0; i < 5; ++i) {
-        other(i);
-    }
+public int main() {
+    int a = 5;
+    int b = 5;
+    ++b;
+
+    other(a);
+    other(b);
 
     return 0;
 }

@@ -14,7 +14,7 @@ pub fn compile_scope(state: &mut ScopeState, compilation_state: &mut Compilation
 
 pub fn compile_statement(state: &mut ScopeState, compilation_state: &mut CompilationState, statement: &Statement) {
     match statement {
-        Statement::VariableDefinition { identifier, expression: expression_opt, data_type } => {
+        Statement::VariableDefinition { identifier, expression, data_type } => {
             let size = if let DataType::Array { data_type, size } = data_type {
                 sizeof(data_type, compilation_state) * size
             } else {
@@ -23,13 +23,13 @@ pub fn compile_statement(state: &mut ScopeState, compilation_state: &mut Compila
 
             state.stack_size_current = ((state.stack_size_current + size - 1) / size) * size + size;
 
-            if let Some(expression) = expression_opt {
+            if let Some(expression) = expression {
                 let result = compile_expression(state, compilation_state, &expression, None);
                 if result.data_type != *data_type {
                     panic!("Variable {} doesn't have the same type as the expression!", identifier);
                 }
                 match result.result_container {
-                    ResultContainer::TempVariable(temp) => {
+                    ResultContainer::TempVariable(ref temp) => {
                         match *temp.borrow() {
                             TempVariable::Register(reg) => {
                                 state.assembly.push_str(&fmt!("mov {} [rbp - {}], {}\n",
@@ -44,17 +44,17 @@ pub fn compile_statement(state: &mut ScopeState, compilation_state: &mut Compila
                     ResultContainer::FloatRegister => {
                         state.assembly.push_str(&fmt!("movss {} [rbp - {}], xmm0\n", sizeofword(data_type), state.stack_size_current));
                     },
-                    ResultContainer::Flag(flag) => {
+                    ResultContainer::Flag(ref flag) => {
                         let reg = force_get_any_free_register(state, &[], None);
                         let set_instruction = set_instruction_from_flag(&flag);
                         let reg_str = reg_from_size(size, reg);
                         state.assembly.push_str(&fmt!("{} {}\nmov {} [rbp - {}], {}\n", set_instruction, reg_str, sizeofword(data_type), state.stack_size_current, reg_str));
                     },
-                    ResultContainer::IdentifierWithOffset { identifier: _, offset: _ } => {},
+                    ResultContainer::IdentifierWithOffset { identifier: _, offset: _ } => {}
                 }
             }
             state.variables.push(Variable { identifier: identifier.clone(), stack_location: state.stack_size_current, data_type: data_type.clone() });
-        }, 
+        }
         Statement::Return(expression) => {
             let result = compile_expression(state, compilation_state, expression, Some(RAX));
             
@@ -156,6 +156,12 @@ pub fn compile_statement(state: &mut ScopeState, compilation_state: &mut Compila
         },
         Statement::For { inital_statement, condition_expr, iteration_expr, scope } => {
             let variables_len = state.variables.len();
+
+            let begin_label_id = compilation_state.unique_label_id;
+            compilation_state.unique_label_id += 1;
+            state.assembly.push_str(&fmt!(".L{}:\n", begin_label_id));
+
+            compile_statement(state, compilation_state, inital_statement);
             let mut scope_state = ScopeState {
                 iter: scope.iter().peekable(),
                 stack_size_current: state.stack_size_current,
@@ -165,12 +171,6 @@ pub fn compile_statement(state: &mut ScopeState, compilation_state: &mut Compila
                 assembly: String::new(),
                 used_registers: state.used_registers.clone()
             };
-
-            let begin_label_id = compilation_state.unique_label_id;
-            compilation_state.unique_label_id += 1;
-            state.assembly.push_str(&fmt!(".L{}:\n", begin_label_id));
-
-            compile_statement(state, compilation_state, inital_statement);
             let result = compile_expression(&mut scope_state, compilation_state, condition_expr, None);
 
             if result.data_type != DataType::Boolean {

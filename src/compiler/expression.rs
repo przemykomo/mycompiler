@@ -13,9 +13,7 @@ pub fn compile_expression(
     match expression {
         Expression::IntLiteral(value) => {
             let reg = force_get_any_free_register(state, &[], result_hint);
-            state
-                .assembly
-                .push_str(&fmt!("mov {}, {}\n", reg_from_size(8, reg), value));
+            state.asm.mov(reg, value, Word::QWORD);
             let temp = Rc::new(RefCell::new(TempVariable::Register(reg)));
             state.used_registers.insert(reg, temp.clone());
             ExpressionResult {
@@ -25,9 +23,7 @@ pub fn compile_expression(
         }
         Expression::CharacterLiteral(c) => {
             let reg = force_get_any_free_register(state, &[], result_hint);
-            state
-                .assembly
-                .push_str(&fmt!("mov {}, {}\n", reg_from_size(1, reg), c));
+            state.asm.mov(reg, c, Word::BYTE);
             let temp = Rc::new(RefCell::new(TempVariable::Register(reg)));
             state.used_registers.insert(reg, temp.clone());
             ExpressionResult {
@@ -107,29 +103,13 @@ pub fn compile_expression(
                     };
 
                     match operator {
-                        ArithmeticOperator::Add => state.assembly.push_str(&fmt!(
-                            "add {}, {}\n",
-                            reg_from_size(8, left_reg),
-                            reg_from_size(8, right_reg)
-                        )),
-                        ArithmeticOperator::Subtract => state.assembly.push_str(&fmt!(
-                            "sub {}, {}\n",
-                            reg_from_size(8, left_reg),
-                            reg_from_size(8, right_reg)
-                        )),
-                        ArithmeticOperator::Multiply => state.assembly.push_str(&fmt!(
-                            "imul {}, {}\n",
-                            reg_from_size(8, left_reg),
-                            reg_from_size(8, right_reg)
-                        )),
+                        ArithmeticOperator::Add => state.asm.add(left_reg, right_reg, Word::QWORD),
+                        ArithmeticOperator::Subtract => state.asm.sub(left_reg, right_reg, Word::QWORD),
+                        ArithmeticOperator::Multiply => state.asm.imul(left_reg, right_reg, Word::QWORD),
                         ArithmeticOperator::Divide => {
                             if left_reg != RAX {
                                 free_register(state, RAX, &[]);
-                                state.assembly.push_str(&fmt!(
-                                    "mov {}, {}\n",
-                                    reg_from_size(8, RAX),
-                                    reg_from_size(8, left_reg)
-                                ));
+                                state.asm.mov(RAX, left_reg, Word::QWORD);
                                 state.used_registers.remove(&left_reg);
                                 *left_temp.borrow_mut() = TempVariable::Register(RAX);
                                 state.used_registers.insert(RAX, left_temp.clone());
@@ -137,9 +117,8 @@ pub fn compile_expression(
                             if state.used_registers.contains_key(&RDX) {
                                 free_register(state, RDX, &[]);
                             }
-                            state
-                                .assembly
-                                .push_str(&fmt!("cqo\nidiv {}\n", reg_from_size(8, right_reg)));
+                            state.asm.cqo();
+                            state.asm.idiv(right_reg, Word::QWORD);
                         }
                     }
                     state.used_registers.remove(&right_reg);
@@ -150,9 +129,13 @@ pub fn compile_expression(
                 }
                 DataType::Float => {
                     match operator {
-                        ArithmeticOperator::Add => state
-                            .assembly
-                            .push_str("pop rax\nmovd xmm1, eax\naddss xmm0, xmm1\n"),
+                        ArithmeticOperator::Add => {
+                            state.asm.pop(RAX);
+                            state.asm.nmovd(XMM1, RAX);
+                        },
+                        // ArithmeticOperator::Add => state
+                        //     .assembly
+                        //     .push_str("pop rax\nmovd xmm1, eax\naddss xmm0, xmm1\n"),
                         ArithmeticOperator::Subtract => state
                             .assembly
                             .push_str("pop rax\nmovd xmm1, eax\nsubss xmm0, xmm1\n"),

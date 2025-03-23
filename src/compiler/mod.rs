@@ -368,7 +368,7 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
             used_registers: RegMap::new()
         };
         compile_scope(&mut scope_state, &mut compilation_state);
-        compilation_state.asm.sub(RSP, ((scope_state.max_stack_size + 15) / 16) * 16);
+        compilation_state.asm.sub(RSP, ((scope_state.max_stack_size + 15) / 16) * 16, Word::QWORD);
         compilation_state.asm.append(scope_state.asm);
         /*
         to_append = formatdoc!(".{}.end:

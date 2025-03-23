@@ -3,6 +3,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::*;
+use asmutil::FloatRegister::*;
 
 pub fn compile_expression(
     state: &mut ScopeState,
@@ -13,7 +14,7 @@ pub fn compile_expression(
     match expression {
         Expression::IntLiteral(value) => {
             let reg = force_get_any_free_register(state, &[], result_hint);
-            state.asm.mov(reg, value, Word::QWORD);
+            state.asm.mov(reg, *value, Word::QWORD);
             let temp = Rc::new(RefCell::new(TempVariable::Register(reg)));
             state.used_registers.insert(reg, temp.clone());
             ExpressionResult {
@@ -131,20 +132,24 @@ pub fn compile_expression(
                     match operator {
                         ArithmeticOperator::Add => {
                             state.asm.pop(RAX);
-                            state.asm.nmovd(XMM1, RAX);
+                            state.asm.movd(XMM1, RAX);
+                            state.asm.addss(XMM0, XMM1);
                         },
-                        // ArithmeticOperator::Add => state
-                        //     .assembly
-                        //     .push_str("pop rax\nmovd xmm1, eax\naddss xmm0, xmm1\n"),
-                        ArithmeticOperator::Subtract => state
-                            .assembly
-                            .push_str("pop rax\nmovd xmm1, eax\nsubss xmm0, xmm1\n"),
-                        ArithmeticOperator::Multiply => state
-                            .assembly
-                            .push_str("pop rax\nmovd xmm1, eax\nmulss xmm0, xmm1\n"),
-                        ArithmeticOperator::Divide => state
-                            .assembly
-                            .push_str("pop rax\nmovd xmm1, eax\ndivss xmm0, xmm1\n"),
+                        ArithmeticOperator::Subtract => {
+                            state.asm.pop(RAX);
+                            state.asm.movd(XMM1, RAX);
+                            state.asm.subss(XMM0, XMM1);
+                        },
+                        ArithmeticOperator::Multiply => {
+                            state.asm.pop(RAX);
+                            state.asm.movd(XMM1, RAX);
+                            state.asm.mulss(XMM0, XMM1);
+                        },
+                        ArithmeticOperator::Divide => {
+                            state.asm.pop(RAX);
+                            state.asm.movd(XMM1, RAX);
+                            state.asm.divss(XMM0, XMM1);
+                        },
                     }
                     ExpressionResult {
                         data_type: DataType::Float,
@@ -166,7 +171,7 @@ pub fn compile_expression(
             if right_result.data_type != left_result.data_type {
                 panic!("Cannot compare different data types!");
             }
-            let size = sizeof(&left_result.data_type, compilation_state);
+            let size = sizeofword(&left_result.data_type);
 
             let ResultContainer::TempVariable(left_temp) = left_result.result_container else {
                 unreachable!()
@@ -180,11 +185,7 @@ pub fn compile_expression(
             let TempVariable::Register(right_reg) = right_temp.borrow().clone() else {
                 unreachable!()
             };
-            state.assembly.push_str(&fmt!(
-                "cmp {}, {}\n",
-                reg_from_size(size, left_reg),
-                reg_from_size(size, right_reg)
-            ));
+            state.asm.cmp(left_reg, right_reg, size); 
             state.used_registers.remove(&left_reg);
             state.used_registers.remove(&right_reg);
 
@@ -216,10 +217,7 @@ pub fn compile_expression(
             };
 
             if let DataType::Pointer(data_type) = result.data_type {
-                let reg_name = reg_from_size(8, reg);
-                state
-                    .assembly
-                    .push_str(&fmt!("mov {reg_name}, QWORD [{reg_name}]\n"));
+                state.asm.mov(reg, RegPointer { reg, offset: 0 }, Word::QWORD);
                 ExpressionResult {
                     data_type: *data_type,
                     result_container: ResultContainer::TempVariable(temp),
@@ -241,11 +239,8 @@ pub fn compile_expression(
                     .rev()
                     .find(|var| var.identifier.eq(&identifier))
                     .expect(&fmt!("Undeclared variable: \"{}\"", identifier));
-                state.assembly.push_str(&fmt!(
-                    "lea {}, [rbp - {}]\n",
-                    reg_from_size(8, reg),
-                    variable.stack_location - offset
-                ));
+                
+                state.asm.lea(reg, Memory::Reg(RegPointer { reg: RBP, offset: -(variable.stack_location - offset) }), Word::QWORD);
                 ExpressionResult {
                     data_type: DataType::Pointer(Box::new(variable.data_type.clone())),
                     result_container: ResultContainer::TempVariable(Rc::new(RefCell::new(
@@ -268,9 +263,8 @@ pub fn compile_expression(
                 compilation_state.string_constants.insert(text.clone(), id);
             }
             let reg = force_get_any_free_register(state, &[], result_hint);
-            state
-                .assembly
-                .push_str(&fmt!("lea {}, [.String{}]\n", reg_from_size(8, reg), id));
+
+            state.asm.lea(reg, Memory::Label(fmt!(".String{}", id)), Word::QWORD);
             ExpressionResult {
                 data_type: DataType::Pointer(Box::new(DataType::Char)),
                 result_container: ResultContainer::TempVariable(Rc::new(RefCell::new(
@@ -283,9 +277,7 @@ pub fn compile_expression(
         }
         Expression::BoolLiteral(value) => {
             let reg = force_get_any_free_register(state, &[], result_hint);
-            state
-                .assembly
-                .push_str(&fmt!("mov {}, {}\n", reg_from_size(8, reg), *value as i32));
+            state.asm.mov(reg, *value as i32, Word::QWORD);
             ExpressionResult {
                 data_type: DataType::Boolean,
                 result_container: ResultContainer::TempVariable(Rc::new(RefCell::new(
@@ -304,9 +296,7 @@ pub fn compile_expression(
                 id = compilation_state.float_constants.len();
                 compilation_state.float_constants.insert(value.clone(), id);
             }
-            state
-                .assembly
-                .push_str(&fmt!("movss xmm0, DWORD [.Float{}]\n", id));
+            state.asm.movss(XMM0, fmt!(".Float{}", id));
             ExpressionResult {
                 data_type: DataType::Float,
                 result_container: ResultContainer::FloatRegister,
@@ -357,12 +347,7 @@ pub fn compile_expression(
                     todo!();
                     //state.assembly.push_str(&format!("movd eax, xmm0\nmov {} [rbp - {}], {}\n", sizeofword(&data_type), stack_location - offset, reg_from_size(size, )));
                 } else {
-                    state.assembly.push_str(&fmt!(
-                        "mov {} [rbp - {}], {}\n",
-                        sizeofword(&data_type),
-                        stack_location - offset,
-                        reg_from_size(size, reg)
-                    ));
+                    state.asm.mov(RegPointer { reg: RBP, offset: -(stack_location - offset) }, reg, sizeofword(&data_type));
                 }
 
                 right_result
@@ -431,11 +416,7 @@ pub fn compile_expression(
                 if is_float(&data_type) {
                     todo!();
                 } else {
-                    state.assembly.push_str(&fmt!(
-                        "add {} [rbp - {}], 1\n",
-                        sizeofword(&data_type),
-                        stack_location - offset
-                    ));
+                    state.asm.add(RegPointer { reg: RBP, offset: -(stack_location - offset) }, 1, sizeofword(&data_type));
                 }
 
                 result
@@ -466,11 +447,7 @@ pub fn compile_expression(
                 if is_float(&data_type) {
                     todo!();
                 } else {
-                    state.assembly.push_str(&fmt!(
-                        "sub {} [rbp - {}], 1\n",
-                        sizeofword(&data_type),
-                        stack_location - offset
-                    ));
+                    state.asm.sub(RegPointer { reg: RBP, offset: -(stack_location - offset) }, 1, sizeofword(&data_type));
                 }
 
                 result
@@ -504,11 +481,7 @@ fn move_to_reg_if_needed(
                 .find(|var| var.identifier.eq(&identifier))
                 .expect(&fmt!("Undeclared variable: \"{}\"", identifier));
             if let Some(reg) = get_any_free_register(state) {
-                state.assembly.push_str(&fmt!(
-                    "mov {}, [rbp - {}]\n",
-                    reg_from_size(8, reg),
-                    variable.stack_location - offset
-                ));
+                state.asm.mov(reg, RegPointer { reg: RBP, offset: -(variable.stack_location - offset) }, Word::QWORD);
                 let temp = Rc::new(RefCell::new(TempVariable::Register(reg)));
                 expression_result.result_container = ResultContainer::TempVariable(temp.clone());
                 state.used_registers.insert(reg, temp);

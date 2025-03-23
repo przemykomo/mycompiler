@@ -15,6 +15,7 @@ pub enum Word {
     BYTE
 }
 
+#[allow(dead_code)]
 pub enum FloatRegister {
     XMM0,
     XMM1,
@@ -32,6 +33,11 @@ pub enum FloatRegister {
     XMM13,
     XMM14,
     XMM15
+}
+
+pub enum Memory {
+    Reg(RegPointer),
+    Label(String)
 }
 
 pub struct RegPointer {
@@ -52,22 +58,44 @@ impl Display for Word {
 }
 
 pub trait Operand {
-    fn from_size(&self, word: &Word) -> String;
+    fn asm_from_size(&self, word: &Word) -> String;
 }
 
 pub trait FloatOperand {
     fn asm(&self) -> String;
 }
 
+pub trait FloatOrIntRegOrMemOperand {
+    fn asm(&self) -> String;
+}
+
 impl Operand for RegPointer {
-    fn from_size(&self, word: &Word) -> String {
+    fn asm_from_size(&self, word: &Word) -> String {
         fmt!("{} [{} {:+}]", word, reg_from_size(8, self.reg), self.offset)
+    }
+}
+
+impl FloatOperand for String {
+    fn asm(&self) -> String {
+        fmt!("DWORD [{}]", self)
     }
 }
 
 impl FloatOperand for RegPointer {
     fn asm(&self) -> String {
-        self.from_size(&Word::DWORD) // assuming only f32 for now
+        self.asm_from_size(&Word::DWORD) // assuming only f32 for now
+    }
+}
+
+impl FloatOrIntRegOrMemOperand for FloatRegister {
+    fn asm(&self) -> String {
+        FloatOperand::asm(self)
+    }
+}
+
+impl FloatOrIntRegOrMemOperand for Register {
+    fn asm(&self) -> String {
+        self.asm_from_size(&Word::DWORD)
     }
 }
 
@@ -97,8 +125,17 @@ impl FloatOperand for FloatRegister {
 use Register::*;
 use FloatRegister::*;
 
+impl Operand for Memory {
+    fn asm_from_size(&self, word: &Word) -> String {
+        match self {
+            Memory::Reg(reg_pointer) => reg_pointer.asm_from_size(word),
+            Memory::Label(label) => label.clone(),
+        }
+    }
+}
+
 impl Operand for Register {
-    fn from_size(&self, word: &Word) -> String {
+    fn asm_from_size(&self, word: &Word) -> String {
         match (self, word) {
             (RAX, Word::QWORD) => "rax", (RAX, Word::DWORD) => "eax",  (RAX, Word::WORD) => "ax",   (RAX, Word::BYTE) => "al",
             (RBX, Word::QWORD) => "rbx", (RBX, Word::DWORD) => "ebx",  (RBX, Word::WORD) => "bx",   (RBX, Word::BYTE) => "bl",
@@ -120,14 +157,14 @@ impl Operand for Register {
     }
 }
 
-impl Operand for &i32 {
-    fn from_size(&self, _word: &Word) -> String {
+impl Operand for i32 {
+    fn asm_from_size(&self, _word: &Word) -> String {
         self.to_string()
     }
 }
 
 impl Operand for &char {
-    fn from_size(&self, _word: &Word) -> String {
+    fn asm_from_size(&self, _word: &Word) -> String {
         self.to_string()
     }
 }
@@ -154,11 +191,31 @@ impl Asm {
     }
 
     pub fn mov(&mut self, left: impl Operand, right: impl Operand, size: Word) {
-        self.assembly.push_str(&fmt!("mov {}, {}\n", left.from_size(&size), right.from_size(&size)));
+        self.assembly.push_str(&fmt!("mov {}, {}\n", left.asm_from_size(&size), right.asm_from_size(&size)));
+    }
+
+    pub fn subss(&mut self, left: impl FloatOperand, right: impl FloatOperand) {
+        self.assembly.push_str(&fmt!("subss {}, {}\n", left.asm(), right.asm()));
+    }
+
+    pub fn mulss(&mut self, left: impl FloatOperand, right: impl FloatOperand) {
+        self.assembly.push_str(&fmt!("mulss {}, {}\n", left.asm(), right.asm()));
+    }
+
+    pub fn divss(&mut self, left: impl FloatOperand, right: impl FloatOperand) {
+        self.assembly.push_str(&fmt!("divss {}, {}\n", left.asm(), right.asm()));
+    }
+
+    pub fn addss(&mut self, left: impl FloatOperand, right: impl FloatOperand) {
+        self.assembly.push_str(&fmt!("addss {}, {}\n", left.asm(), right.asm()));
     }
 
     pub fn movss(&mut self, left: impl FloatOperand, right: impl FloatOperand) {
         self.assembly.push_str(&fmt!("movss {}, {}\n", left.asm(), right.asm()));
+    }
+
+    pub fn movd(&mut self, left: impl FloatOrIntRegOrMemOperand, right: impl FloatOrIntRegOrMemOperand) {
+        self.assembly.push_str(&fmt!("movd {}, {}\n", left.asm(), right.asm()));
     }
 
     pub fn append(&mut self, other: Asm) {
@@ -178,7 +235,7 @@ impl Asm {
     }
 
     pub fn set(&mut self, flag: &super::Flag, reg: Register) {
-        self.assembly.push_str(&fmt!("{} {}\n", set_instruction_from_flag(flag), reg.from_size(&Word::BYTE)));
+        self.assembly.push_str(&fmt!("{} {}\n", set_instruction_from_flag(flag), reg.asm_from_size(&Word::BYTE)));
     }
 
     pub fn jmp(&mut self, label: &str) {
@@ -194,22 +251,30 @@ impl Asm {
     }
 
     pub fn add(&mut self, left: impl Operand, right: impl Operand, size: Word) {
-        self.assembly.push_str(&fmt!("add {} {}\n", left.from_size(&size), right.from_size(&size)));
+        self.assembly.push_str(&fmt!("add {}, {}\n", left.asm_from_size(&size), right.asm_from_size(&size)));
     }
 
     pub fn sub(&mut self, left: impl Operand, right: impl Operand, size: Word) {
-        self.assembly.push_str(&fmt!("sub {} {}\n", left.from_size(&size), right.from_size(&size)));
+        self.assembly.push_str(&fmt!("sub {}, {}\n", left.asm_from_size(&size), right.asm_from_size(&size)));
+    }
+
+    pub fn cmp(&mut self, left: impl Operand, right: impl Operand, size: Word) {
+        self.assembly.push_str(&fmt!("cmp {}, {}\n", left.asm_from_size(&size), right.asm_from_size(&size)));
     }
 
     pub fn imul(&mut self, left: impl Operand, right: impl Operand, size: Word) {
-        self.assembly.push_str(&fmt!("imul {} {}\n", left.from_size(&size), right.from_size(&size)));
+        self.assembly.push_str(&fmt!("imul {}, {}\n", left.asm_from_size(&size), right.asm_from_size(&size)));
     }
 
     pub fn idiv(&mut self, op: impl Operand, size: Word) {
-        self.assembly.push_str(&fmt!("idiv {}\n", op.from_size(&size)));
+        self.assembly.push_str(&fmt!("idiv {}\n", op.asm_from_size(&size)));
     }
 
     pub fn cqo(&mut self) {
         self.assembly.push_str("cqo\n");
+    }
+
+    pub fn lea(&mut self, left: Register, right: Memory, size: Word) {
+        self.assembly.push_str(&fmt!("lea {} {}\n", left.asm_from_size(&size), right.asm_from_size(&Word::QWORD)));
     }
 }

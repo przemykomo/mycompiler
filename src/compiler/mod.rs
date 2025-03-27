@@ -64,7 +64,8 @@ enum ResultContainer {
     TempVariable(Rc<RefCell<TempVariable>>),
     FloatRegister,
     Flag(Flag),
-    IdentifierWithOffset { identifier: String, offset: i32 }
+    IdentifierWithOffset { identifier: String, offset: i32 },
+    StructLiteral { identifier: String, members: Vec<(String, ExpressionResult)> }
 }
 
 #[derive(Debug, Eq, Hash, PartialEq, Clone, Copy)]

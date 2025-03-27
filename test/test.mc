@@ -6,12 +6,13 @@ struct mystruct {
 }
 
 public int main() {
-    int a = 5;
-    int b = 5;
-    ++b;
+    mystruct a = mystruct {
+        a: 5,
+        b: 3
+    };
 
-    other(a);
-    other(b);
+    other(a.a);
+    other(a.b);
 
     return 0;
 }

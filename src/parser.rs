@@ -9,10 +9,11 @@ pub enum Expression {
     CharacterLiteral(char),
     BoolLiteral(bool),
     FloatLiteral(String),
+    StringLiteral(String),
+    StructLiteral { identifier: String, members: Vec<(String, Expression)> },
     Identifier(String),
     ArithmeticExpression { left: Box<Expression>, right: Box<Expression>, operator: ArithmeticOperator },
     ComparisonExpression { left: Box<Expression>, right: Box<Expression>, operator: ComparisonOperator },
-    StringLiteral(String),
     Dereference(Box<Expression>),
     AddressOf(Box<Expression>),
     ArraySubscript { identifier: String, element: Box<Expression> },
@@ -550,6 +551,32 @@ fn parse_identifier(iter: &mut Peekable<Iter<Token>>, identifier: String) -> Exp
                 Expression::FunctionCall(FunctionCall { identifier, arguments })
             } else {
                 panic!("Expected ')' at the end of function call.");
+            }
+        },
+        Some(Token::CurlyBracketOpen) => {
+            iter.next();
+
+            let mut members: Vec<(String, Expression)> = Vec::new();
+            loop {
+                if let Some(Token::Identifier(identifier)) = iter.next() {
+                    let Some(Token::Colon) = iter.next() else {
+                        panic!("Expected a colon after a member identifier in a struct literal.");
+                    };
+                    members.push((identifier.clone(), parse_expression(iter)));
+                    if let Some(Token::Coma) = iter.peek() {
+                        iter.next();
+                    } else {
+                        break;
+                    }
+                } else {
+                    panic!("Expected a member identifier in a struct literal.");
+                }
+            }
+
+            if let Some(Token::CurlyBracketClose) = iter.next() {
+                Expression::StructLiteral { identifier, members }
+            } else {
+                panic!("Expected '}}' at the end of a struct literal.");
             }
         },
         _ => Expression::Identifier(identifier.clone()),

@@ -1,6 +1,6 @@
 use crate::tokenizer::DataType;
 
-use expression::compile_expression;
+use expression::*;
 
 use super::*;
 
@@ -21,6 +21,7 @@ pub fn compile_statement(state: &mut ScopeState, compilation_state: &mut Compila
             };
 
             state.stack_size_current = ((state.stack_size_current + size - 1) / size) * size + size;
+            state.variables.push(Variable { identifier: identifier.clone(), stack_location: state.stack_size_current, data_type: data_type.clone() });
 
             if let Some(expression) = expression {
                 let result = compile_expression(state, compilation_state, &expression, None);
@@ -47,10 +48,18 @@ pub fn compile_statement(state: &mut ScopeState, compilation_state: &mut Compila
                         state.asm.set(flag, reg);
                         state.asm.mov(RegPointer { reg: RBP, offset: -state.stack_size_current }, reg, Word::BYTE);
                     },
-                    ResultContainer::IdentifierWithOffset { identifier: _, offset: _ } => {}
+                    ResultContainer::IdentifierWithOffset { identifier: _, offset: _ } => {},
+                    ResultContainer::StructLiteral { identifier: _, members } => {
+                        for (member, result) in members {
+                            let left_result = compile_expression(state, compilation_state, &Expression::MemberAccess {
+                                left: Box::new(Expression::Identifier(identifier.clone())),
+                                right: Box::new(Expression::Identifier(member))
+                            }, None);
+                            compile_assigment(state, left_result, result);
+                        }
+                    }
                 }
             }
-            state.variables.push(Variable { identifier: identifier.clone(), stack_location: state.stack_size_current, data_type: data_type.clone() });
         }
         Statement::Return(expression) => {
             let result = compile_expression(state, compilation_state, expression, Some(RAX));

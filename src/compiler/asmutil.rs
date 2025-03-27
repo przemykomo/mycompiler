@@ -275,6 +275,6 @@ impl Asm {
     }
 
     pub fn lea(&mut self, left: Register, right: Memory, size: Word) {
-        self.assembly.push_str(&fmt!("lea {} {}\n", left.asm_from_size(&size), right.asm_from_size(&Word::QWORD)));
+        self.assembly.push_str(&fmt!("lea {}, {}\n", left.asm_from_size(&size), right.asm_from_size(&Word::QWORD)));
     }
 }

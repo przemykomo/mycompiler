@@ -105,8 +105,12 @@ pub fn compile_expression(
 
                     match operator {
                         ArithmeticOperator::Add => state.asm.add(left_reg, right_reg, Word::QWORD),
-                        ArithmeticOperator::Subtract => state.asm.sub(left_reg, right_reg, Word::QWORD),
-                        ArithmeticOperator::Multiply => state.asm.imul(left_reg, right_reg, Word::QWORD),
+                        ArithmeticOperator::Subtract => {
+                            state.asm.sub(left_reg, right_reg, Word::QWORD)
+                        }
+                        ArithmeticOperator::Multiply => {
+                            state.asm.imul(left_reg, right_reg, Word::QWORD)
+                        }
                         ArithmeticOperator::Divide => {
                             if left_reg != RAX {
                                 free_register(state, RAX, &[]);
@@ -134,22 +138,22 @@ pub fn compile_expression(
                             state.asm.pop(RAX);
                             state.asm.movd(XMM1, RAX);
                             state.asm.addss(XMM0, XMM1);
-                        },
+                        }
                         ArithmeticOperator::Subtract => {
                             state.asm.pop(RAX);
                             state.asm.movd(XMM1, RAX);
                             state.asm.subss(XMM0, XMM1);
-                        },
+                        }
                         ArithmeticOperator::Multiply => {
                             state.asm.pop(RAX);
                             state.asm.movd(XMM1, RAX);
                             state.asm.mulss(XMM0, XMM1);
-                        },
+                        }
                         ArithmeticOperator::Divide => {
                             state.asm.pop(RAX);
                             state.asm.movd(XMM1, RAX);
                             state.asm.divss(XMM0, XMM1);
-                        },
+                        }
                     }
                     ExpressionResult {
                         data_type: DataType::Float,
@@ -185,7 +189,7 @@ pub fn compile_expression(
             let TempVariable::Register(right_reg) = right_temp.borrow().clone() else {
                 unreachable!()
             };
-            state.asm.cmp(left_reg, right_reg, size); 
+            state.asm.cmp(left_reg, right_reg, size);
             state.used_registers.remove(&left_reg);
             state.used_registers.remove(&right_reg);
 
@@ -217,7 +221,9 @@ pub fn compile_expression(
             };
 
             if let DataType::Pointer(data_type) = result.data_type {
-                state.asm.mov(reg, RegPointer { reg, offset: 0 }, Word::QWORD);
+                state
+                    .asm
+                    .mov(reg, RegPointer { reg, offset: 0 }, Word::QWORD);
                 ExpressionResult {
                     data_type: *data_type,
                     result_container: ResultContainer::TempVariable(temp),
@@ -239,8 +245,15 @@ pub fn compile_expression(
                     .rev()
                     .find(|var| var.identifier.eq(&identifier))
                     .expect(&fmt!("Undeclared variable: \"{}\"", identifier));
-                
-                state.asm.lea(reg, Memory::Reg(RegPointer { reg: RBP, offset: -(variable.stack_location - offset) }), Word::QWORD);
+
+                state.asm.lea(
+                    reg,
+                    Memory::Reg(RegPointer {
+                        reg: RBP,
+                        offset: -(variable.stack_location - offset),
+                    }),
+                    Word::QWORD,
+                );
                 ExpressionResult {
                     data_type: DataType::Pointer(Box::new(variable.data_type.clone())),
                     result_container: ResultContainer::TempVariable(Rc::new(RefCell::new(
@@ -264,7 +277,9 @@ pub fn compile_expression(
             }
             let reg = force_get_any_free_register(state, &[], result_hint);
 
-            state.asm.lea(reg, Memory::Label(fmt!(".String{}", id)), Word::QWORD);
+            state
+                .asm
+                .lea(reg, Memory::Label(fmt!(".String{}", id)), Word::QWORD);
             ExpressionResult {
                 data_type: DataType::Pointer(Box::new(DataType::Char)),
                 result_container: ResultContainer::TempVariable(Rc::new(RefCell::new(
@@ -305,55 +320,7 @@ pub fn compile_expression(
         Expression::Assigment { left, right } => {
             let left_result = compile_expression(state, compilation_state, left, None);
             let right_result = compile_expression(state, compilation_state, right, None);
-            let right_result = move_to_reg_if_needed(state, right_result);
-            let ResultContainer::TempVariable(ref temp) = right_result.result_container else {
-                unreachable!()
-            };
-            let TempVariable::Register(reg) = temp.borrow().clone() else {
-                unreachable!()
-            };
-
-            if right_result.data_type != left_result.data_type {
-                panic!("Cannot assing value of a different data type!");
-            }
-
-            if let ExpressionResult {
-                data_type,
-                result_container: ResultContainer::IdentifierWithOffset { identifier, offset },
-            } = left_result
-            {
-                let variable = state
-                    .variables
-                    .iter()
-                    .rev()
-                    .find(|var| var.identifier.eq(&identifier))
-                    .expect(&fmt!("Undeclared variable: \"{}\"", &identifier));
-
-                let size = sizeof(&data_type, compilation_state);
-                let stack_location = variable.stack_location.clone();
-
-                /*
-                if let ResultContainer::Register = *offset {
-                    if is_float(&data_type) {
-                        state.assembly.push_str(&format!("pop rbx\nmovd xmm0, ebx\nmov {} [rbp - {} + rax * {}], {}\n", sizeofword(&data_type), stack_location, size, reg_from_size(size, "rax")));
-                    } else {
-                        state.assembly.push_str(&format!("pop rbx\nmov {} [rbp - {} + rax * {}], {}\n", sizeofword(&data_type), stack_location, size, reg_from_size(size, "rax")));
-                    }
-                } else {
-                    panic!();
-                }*/
-
-                if is_float(&data_type) {
-                    todo!();
-                    //state.assembly.push_str(&format!("movd eax, xmm0\nmov {} [rbp - {}], {}\n", sizeofword(&data_type), stack_location - offset, reg_from_size(size, )));
-                } else {
-                    state.asm.mov(RegPointer { reg: RBP, offset: -(stack_location - offset) }, reg, sizeofword(&data_type));
-                }
-
-                right_result
-            } else {
-                panic!("Trying to assign value to rvalue!");
-            }
+            compile_assigment(state, left_result, right_result)
         }
         Expression::MemberAccess { left, right } => {
             let left = compile_expression(state, compilation_state, left, None);
@@ -416,7 +383,14 @@ pub fn compile_expression(
                 if is_float(&data_type) {
                     todo!();
                 } else {
-                    state.asm.add(RegPointer { reg: RBP, offset: -(stack_location - offset) }, 1, sizeofword(&data_type));
+                    state.asm.add(
+                        RegPointer {
+                            reg: RBP,
+                            offset: -(stack_location - offset),
+                        },
+                        1,
+                        sizeofword(&data_type),
+                    );
                 }
 
                 result
@@ -447,7 +421,14 @@ pub fn compile_expression(
                 if is_float(&data_type) {
                     todo!();
                 } else {
-                    state.asm.sub(RegPointer { reg: RBP, offset: -(stack_location - offset) }, 1, sizeofword(&data_type));
+                    state.asm.sub(
+                        RegPointer {
+                            reg: RBP,
+                            offset: -(stack_location - offset),
+                        },
+                        1,
+                        sizeofword(&data_type),
+                    );
                 }
 
                 result
@@ -455,6 +436,74 @@ pub fn compile_expression(
                 panic!("Trying to decrement an rvalue!");
             }
         }
+        Expression::StructLiteral {
+            identifier,
+            members,
+        } => {
+            let mut results: Vec<(String, ExpressionResult)> = Vec::new();
+            for (member, expression) in members {
+                results.push((member.clone(), compile_expression(state, compilation_state, expression, None)));
+            }
+
+            ExpressionResult { data_type: DataType::Struct(identifier.clone()), result_container: ResultContainer::StructLiteral { identifier: identifier.clone(), members: results } }
+        }
+    }
+}
+
+pub fn compile_assigment(state: &mut ScopeState, left_result: ExpressionResult, right_result: ExpressionResult) -> ExpressionResult {
+    let right_result = move_to_reg_if_needed(state, right_result);
+    let ResultContainer::TempVariable(ref temp) = right_result.result_container else {
+        unreachable!()
+    };
+    let TempVariable::Register(reg) = temp.borrow().clone() else {
+        unreachable!()
+    };
+
+    if right_result.data_type != left_result.data_type {
+        panic!("Cannot assing value of a different data type!");
+    }
+
+    if let ExpressionResult {
+        data_type,
+        result_container: ResultContainer::IdentifierWithOffset { identifier, offset },
+    } = left_result {
+        let variable = state
+            .variables
+            .iter()
+            .rev()
+            .find(|var| var.identifier.eq(&identifier))
+            .expect(&fmt!("Undeclared variable: \"{}\"", &identifier));
+
+        let stack_location = variable.stack_location.clone();
+
+        /*
+        if let ResultContainer::Register = *offset {
+            if is_float(&data_type) {
+                state.assembly.push_str(&format!("pop rbx\nmovd xmm0, ebx\nmov {} [rbp - {} + rax * {}], {}\n", sizeofword(&data_type), stack_location, size, reg_from_size(size, "rax")));
+            } else {
+                state.assembly.push_str(&format!("pop rbx\nmov {} [rbp - {} + rax * {}], {}\n", sizeofword(&data_type), stack_location, size, reg_from_size(size, "rax")));
+            }
+        } else {
+            panic!();
+        }*/
+
+        if is_float(&data_type) {
+            todo!();
+            //state.assembly.push_str(&format!("movd eax, xmm0\nmov {} [rbp - {}], {}\n", sizeofword(&data_type), stack_location - offset, reg_from_size(size, )));
+        } else {
+            state.asm.mov(
+                RegPointer {
+                    reg: RBP,
+                    offset: -(stack_location - offset),
+                },
+                reg,
+                sizeofword(&data_type),
+            );
+        }
+
+        right_result
+    } else {
+        panic!("Trying to assign value to rvalue!");
     }
 }
 
@@ -464,31 +513,39 @@ fn move_to_reg_if_needed(
 ) -> ExpressionResult {
     match expression_result.result_container {
         ResultContainer::TempVariable(ref temp) => {
-            let temp = temp.clone();
-            let temp = temp.borrow();
-            match *temp {
-                TempVariable::Register(_) => expression_result,
-                TempVariable::Stack(_) => todo!(),
+                let temp = temp.clone();
+                let temp = temp.borrow();
+                match *temp {
+                    TempVariable::Register(_) => expression_result,
+                    TempVariable::Stack(_) => todo!(),
+                }
             }
-        }
         ResultContainer::FloatRegister => todo!(),
         ResultContainer::Flag(_) => todo!(),
         ResultContainer::IdentifierWithOffset { identifier, offset } => {
-            let variable = state
-                .variables
-                .iter()
-                .rev()
-                .find(|var| var.identifier.eq(&identifier))
-                .expect(&fmt!("Undeclared variable: \"{}\"", identifier));
-            if let Some(reg) = get_any_free_register(state) {
-                state.asm.mov(reg, RegPointer { reg: RBP, offset: -(variable.stack_location - offset) }, Word::QWORD);
-                let temp = Rc::new(RefCell::new(TempVariable::Register(reg)));
-                expression_result.result_container = ResultContainer::TempVariable(temp.clone());
-                state.used_registers.insert(reg, temp);
-                expression_result
-            } else {
-                todo!();
+                let variable = state
+                    .variables
+                    .iter()
+                    .rev()
+                    .find(|var| var.identifier.eq(&identifier))
+                    .expect(&fmt!("Undeclared variable: \"{}\"", identifier));
+                if let Some(reg) = get_any_free_register(state) {
+                    state.asm.mov(
+                        reg,
+                        RegPointer {
+                            reg: RBP,
+                            offset: -(variable.stack_location - offset),
+                        },
+                        Word::QWORD,
+                    );
+                    let temp = Rc::new(RefCell::new(TempVariable::Register(reg)));
+                    expression_result.result_container = ResultContainer::TempVariable(temp.clone());
+                    state.used_registers.insert(reg, temp);
+                    expression_result
+                } else {
+                    todo!();
+                }
             }
-        }
+        ResultContainer::StructLiteral { identifier: _, members: _ } => todo!(),
     }
 }

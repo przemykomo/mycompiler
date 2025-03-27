@@ -29,6 +29,7 @@ pub enum Token {
     If,
     Else,
     Coma,
+    Colon,
     Return,
     Struct,
     Period,
@@ -172,6 +173,7 @@ pub fn tokenize(contents: &str) -> Vec<Token> {
                         '<' => Token::SmallerThan,
                         '>' => Token::LargerThan,
                         ',' => Token::Coma,
+                        ':' => Token::Colon,
                         '.' => Token::Period,
                         _ => continue
                 });

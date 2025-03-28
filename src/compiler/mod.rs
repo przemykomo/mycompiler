@@ -243,7 +243,7 @@ fn compile_function_call(compilation_state: &mut CompilationState, state: &mut S
         let result = expression::compile_expression(state, compilation_state, argument, if i <= 5 { Some(SCRATCH_REGS[i]) } else { None });
 
         if result.data_type != data_type {
-            panic!("Passed argument of a wrong type!");
+            panic!("Passed argument of a wrong type! Expected: {:?}, got: {:?}", data_type, result.data_type);
         }
         result
     }).collect();
@@ -331,9 +331,9 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
         let mut size = 0;
 
         for member in struct_declaration.members.iter() {
+            members.push(StructMemberWithOffset { member: member.clone(), offset: size });
             let member_size = sizeof(&member.data_type, &compilation_state);
             size = ((size + member_size - 1) / member_size) * member_size + member_size;
-            members.push(StructMemberWithOffset { member: member.clone(), offset: size });
         }
 
         compilation_state.struct_types.insert(struct_declaration.identifier.clone(), StructType { members, size });
@@ -384,6 +384,8 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
                             pop r12
                             pop rbx
                             ret\n", function.prototype.name); */
+        // TODO: When I make the instructions stored in a vector instead of generating assembly
+        // directly I might check if the last instruction was a jmp to this label and remove it
         compilation_state.asm.label(&fmt!(".{}.end", function.prototype.name));
         // compilation_state.asm.mov(RSP, RBP, Word::QWORD);
         // compilation_state.asm.pop(RBP);

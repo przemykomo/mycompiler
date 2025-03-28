@@ -65,7 +65,9 @@ enum ResultContainer {
     FloatRegister,
     Flag(Flag),
     IdentifierWithOffset { identifier: String, offset: i32 },
-    StructLiteral { identifier: String, members: Vec<(String, ExpressionResult)> }
+    StructLiteral { identifier: String, members: Vec<(String, ExpressionResult)> },
+    ConstInt(i32),
+    ConstChar(char)
 }
 
 #[derive(Debug, Eq, Hash, PartialEq, Clone, Copy)]
@@ -193,6 +195,7 @@ pub fn sizeofword(data_type: &DataType) -> Word {
     }
 }
 
+#[rustfmt::skip]
 fn reg_from_size(size: i32, reg: Register) -> &'static str {
     match (reg, size) {
         (RAX, 8) => "rax", (RAX, 4) => "eax",  (RAX, 2) => "ax",   (RAX, 1) => "al",
@@ -382,8 +385,9 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
                             pop rbx
                             ret\n", function.prototype.name); */
         compilation_state.asm.label(&fmt!(".{}.end", function.prototype.name));
-        compilation_state.asm.mov(RSP, RBP, Word::QWORD);
-        compilation_state.asm.pop(RBP);
+        // compilation_state.asm.mov(RSP, RBP, Word::QWORD);
+        // compilation_state.asm.pop(RBP);
+        compilation_state.asm.leave();
         compilation_state.asm.ret();
     }
 

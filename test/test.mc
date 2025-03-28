@@ -1,4 +1,3 @@
-void other(int a);
 
 struct mystruct {
     int a,
@@ -10,9 +9,6 @@ public int main() {
         a: 5,
         b: 3
     };
-
-    other(a.a);
-    other(a.b);
 
     return 0;
 }

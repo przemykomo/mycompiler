@@ -13,23 +13,23 @@ pub fn compile_expression(
 ) -> ExpressionResult {
     match expression {
         Expression::IntLiteral(value) => {
-            let reg = force_get_any_free_register(state, &[], result_hint);
-            state.asm.mov(reg, *value, Word::QWORD);
-            let temp = Rc::new(RefCell::new(TempVariable::Register(reg)));
-            state.used_registers.insert(reg, temp.clone());
+            // let reg = force_get_any_free_register(state, &[], result_hint);
+            // state.asm.mov(reg, *value, Word::QWORD);
+            // let temp = Rc::new(RefCell::new(TempVariable::Register(reg)));
+            // state.used_registers.insert(reg, temp.clone());
             ExpressionResult {
                 data_type: DataType::Int,
-                result_container: ResultContainer::TempVariable(temp),
+                result_container: ResultContainer::ConstInt(*value),
             }
         }
         Expression::CharacterLiteral(c) => {
-            let reg = force_get_any_free_register(state, &[], result_hint);
-            state.asm.mov(reg, c, Word::BYTE);
-            let temp = Rc::new(RefCell::new(TempVariable::Register(reg)));
-            state.used_registers.insert(reg, temp.clone());
+            // let reg = force_get_any_free_register(state, &[], result_hint);
+            // state.asm.mov(reg, c, Word::BYTE);
+            // let temp = Rc::new(RefCell::new(TempVariable::Register(reg)));
+            // state.used_registers.insert(reg, temp.clone());
             ExpressionResult {
                 data_type: DataType::Char,
-                result_container: ResultContainer::TempVariable(temp),
+                result_container: ResultContainer::ConstChar(*c),
             }
         }
         Expression::Identifier(identifier) => {
@@ -92,41 +92,23 @@ pub fn compile_expression(
                     else {
                         unreachable!()
                     };
-                    let ResultContainer::TempVariable(right_temp) = right_result.result_container
-                    else {
-                        unreachable!()
-                    };
-                    let TempVariable::Register(left_reg) = left_temp.borrow().clone() else {
-                        unreachable!()
-                    };
-                    let TempVariable::Register(right_reg) = right_temp.borrow().clone() else {
-                        unreachable!()
-                    };
 
-                    match operator {
-                        ArithmeticOperator::Add => state.asm.add(left_reg, right_reg, Word::QWORD),
-                        ArithmeticOperator::Subtract => {
-                            state.asm.sub(left_reg, right_reg, Word::QWORD)
-                        }
-                        ArithmeticOperator::Multiply => {
-                            state.asm.imul(left_reg, right_reg, Word::QWORD)
-                        }
-                        ArithmeticOperator::Divide => {
-                            if left_reg != RAX {
-                                free_register(state, RAX, &[]);
-                                state.asm.mov(RAX, left_reg, Word::QWORD);
-                                state.used_registers.remove(&left_reg);
-                                *left_temp.borrow_mut() = TempVariable::Register(RAX);
-                                state.used_registers.insert(RAX, left_temp.clone());
-                            }
-                            if state.used_registers.contains_key(&RDX) {
-                                free_register(state, RDX, &[]);
-                            }
-                            state.asm.cqo();
-                            state.asm.idiv(right_reg, Word::QWORD);
-                        }
+
+                    match right_result.result_container {
+                        ResultContainer::TempVariable(right_temp) => {
+                            let TempVariable::Register(right_reg) = right_temp.borrow().clone() else {
+                                unreachable!()
+                            };
+                            compile_arithmetic_int_expression(state, left_temp.clone(), right_reg, operator);
+                            state.used_registers.remove(&right_reg);
+                        },
+                        ResultContainer::ConstInt(right_const) => {
+                            compile_arithmetic_int_expression(state, left_temp.clone(), right_const, operator);
+                        },
+                        _ => unreachable!()
                     }
-                    state.used_registers.remove(&right_reg);
+
+
                     ExpressionResult {
                         data_type: DataType::Int,
                         result_container: ResultContainer::TempVariable(left_temp),
@@ -442,22 +424,60 @@ pub fn compile_expression(
         } => {
             let mut results: Vec<(String, ExpressionResult)> = Vec::new();
             for (member, expression) in members {
-                results.push((member.clone(), compile_expression(state, compilation_state, expression, None)));
+                results.push((
+                    member.clone(),
+                    compile_expression(state, compilation_state, expression, None),
+                ));
             }
 
-            ExpressionResult { data_type: DataType::Struct(identifier.clone()), result_container: ResultContainer::StructLiteral { identifier: identifier.clone(), members: results } }
+            ExpressionResult {
+                data_type: DataType::Struct(identifier.clone()),
+                result_container: ResultContainer::StructLiteral {
+                    identifier: identifier.clone(),
+                    members: results,
+                },
+            }
         }
     }
 }
 
-pub fn compile_assigment(state: &mut ScopeState, left_result: ExpressionResult, right_result: ExpressionResult) -> ExpressionResult {
+fn compile_arithmetic_int_expression(state: &mut ScopeState<'_>, left_temp: Rc<RefCell<TempVariable>>, right: impl Operand, operator: &ArithmeticOperator) {
+    let TempVariable::Register(left_reg) = left_temp.borrow().clone() else {
+        unreachable!()
+    };
+
+    match operator {
+        ArithmeticOperator::Add => state.asm.add(left_reg, right, Word::QWORD),
+        ArithmeticOperator::Subtract => {
+            state.asm.sub(left_reg, right, Word::QWORD)
+        }
+        ArithmeticOperator::Multiply => {
+            state.asm.imul(left_reg, right, Word::QWORD)
+        }
+        ArithmeticOperator::Divide => {
+            if left_reg != RAX {
+                free_register(state, RAX, &[]); //TODO: protect
+                                                                                 //right register
+                state.asm.mov(RAX, left_reg, Word::QWORD);
+                state.used_registers.remove(&left_reg);
+                *left_temp.borrow_mut() = TempVariable::Register(RAX);
+                state.used_registers.insert(RAX, left_temp.clone());
+            }
+            if state.used_registers.contains_key(&RDX) {
+                free_register(state, RDX, &[]);
+            }
+            state.asm.cqo();
+            state.asm.idiv(right, Word::QWORD); //TODO: possibly make sure right is reg
+        }
+    }
+}
+
+pub fn compile_assigment(
+    state: &mut ScopeState,
+    left_result: ExpressionResult,
+    right_result: ExpressionResult,
+) -> ExpressionResult {
     let right_result = move_to_reg_if_needed(state, right_result);
-    let ResultContainer::TempVariable(ref temp) = right_result.result_container else {
-        unreachable!()
-    };
-    let TempVariable::Register(reg) = temp.borrow().clone() else {
-        unreachable!()
-    };
 
     if right_result.data_type != left_result.data_type {
         panic!("Cannot assing value of a different data type!");
@@ -491,14 +511,43 @@ pub fn compile_assigment(state: &mut ScopeState, left_result: ExpressionResult, 
             todo!();
             //state.assembly.push_str(&format!("movd eax, xmm0\nmov {} [rbp - {}], {}\n", sizeofword(&data_type), stack_location - offset, reg_from_size(size, )));
         } else {
-            state.asm.mov(
-                RegPointer {
-                    reg: RBP,
-                    offset: -(stack_location - offset),
+
+            match right_result.result_container {
+                ResultContainer::TempVariable(ref temp) => {
+                    let TempVariable::Register(reg) = temp.borrow().clone() else {
+                        unreachable!()
+                    };
+                    state.asm.mov(
+                        RegPointer {
+                            reg: RBP,
+                            offset: -(stack_location - offset),
+                        },
+                        reg,
+                        sizeofword(&data_type),
+                    );
                 },
-                reg,
-                sizeofword(&data_type),
-            );
+                ResultContainer::ConstInt(value) => {
+                    state.asm.mov(
+                        RegPointer {
+                            reg: RBP,
+                            offset: -(stack_location - offset),
+                        },
+                        value,
+                        sizeofword(&data_type),
+                    );
+                },
+                ResultContainer::ConstChar(value) => {
+                    state.asm.mov(
+                        RegPointer {
+                            reg: RBP,
+                            offset: -(stack_location - offset),
+                        },
+                        &value,
+                        sizeofword(&data_type),
+                    );
+                },
+                _ => unreachable!()
+            }
         }
 
         right_result
@@ -546,6 +595,11 @@ fn move_to_reg_if_needed(
                     todo!();
                 }
             }
-        ResultContainer::StructLiteral { identifier: _, members: _ } => todo!(),
+        ResultContainer::StructLiteral {
+                identifier: _,
+                members: _,
+            } => todo!(),
+        ResultContainer::ConstInt(_) => expression_result,
+        ResultContainer::ConstChar(_) => expression_result,
     }
 }

@@ -399,8 +399,7 @@ pub fn parse_scope(iter: &mut Peekable<Iter<Token>>) -> Vec<Statement> {
                 if let Some((Token::Identifier(struct_name), Token::Identifier(_identifier))) =
                     iter_clone.next_tuple()
                 {
-                    dbg!(iter.next());
-                    //iter.next();
+                    iter.next();
                     ast.push(parse_variable_definition_with_data_type(
                         &DataType::Struct(struct_name.clone()),
                         iter,

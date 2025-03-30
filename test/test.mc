@@ -4,6 +4,7 @@ struct mystruct {
 }
 
 void other(mystruct* buf);
+
 public int main() {
     mystruct a = mystruct {
         a: 5,
@@ -13,4 +14,8 @@ public int main() {
     other(&a);
 
     return 0;
+}
+
+int myfunc() {
+    return 1;
 }

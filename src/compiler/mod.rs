@@ -65,6 +65,8 @@ enum ResultContainer {
     FloatRegister,
     Flag(Flag),
     IdentifierWithOffset { identifier: String, offset: i32 },
+    #[allow(dead_code)] // TODO: Possibly do some checking if the struct literal matches the
+                        // definition of the struct with the same identifier
     StructLiteral { identifier: String, members: Vec<(String, ExpressionResult)> },
     ConstInt(i32),
     ConstChar(char)
@@ -162,13 +164,6 @@ fn free_register(state: &mut ScopeState, target_reg: Register, protected_registe
     state.asm.mov(RegPointer { reg: RBP, offset: -state.stack_size_current }, reg, Word::QWORD);
     state.used_registers.remove(&reg);
     *temp.borrow_mut() = TempVariable::Stack(state.stack_size_current);
-}
-
-fn can_increment(data_type: &DataType) -> bool {
-    match data_type {
-        DataType::Int | DataType::Char | DataType::Pointer(_) => true,
-        DataType::Array { data_type: _, size: _ } | DataType::Boolean | DataType::Void | DataType::Float | DataType::Struct(_) => false
-    }
 }
 
 fn sizeof(data_type: &DataType, compilation_state: &CompilationState) -> i32 {

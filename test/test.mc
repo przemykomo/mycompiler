@@ -1,21 +1,19 @@
 struct mystruct {
     int a,
-    int b
+    int ^b
 }
 
-void other(mystruct* buf);
-
+void other($mystruct* buf);
 public int main() {
-    mystruct a = mystruct {
-        a: 5,
+    mystruct a = mystructd {
+        a: 5d,
         b: 3
     };
 
     other(&a);
 
-    return 0;
+    return $0;
 }
-
 int myfunc() {
     return 1;
 }

@@ -4,6 +4,24 @@ use expression::*;
 
 use super::*;
 
+fn compile_new_scope(
+    state: &mut ScopeState,
+    compilation_state: &mut CompilationState,
+    statements: &Vec<Statement>,
+) -> (i32, Asm) {
+    let mut scope_state = ScopeState {
+        iter: statements.iter().peekable(),
+        stack_size_current: state.stack_size_current,
+        max_stack_size: state.stack_size_current,
+        variables: state.variables,
+        current_function: state.current_function,
+        asm: Asm::new(),
+        used_registers: state.used_registers.clone(),
+    };
+    compile_scope(&mut scope_state, compilation_state);
+    (scope_state.max_stack_size, scope_state.asm)
+}
+
 pub fn compile_scope(state: &mut ScopeState, compilation_state: &mut CompilationState) {
     while let Some(statement) = state.iter.next() {
         compile_statement(state, compilation_state, statement);
@@ -36,12 +54,18 @@ pub fn compile_statement(
             });
 
             if let Some(expression) = expression {
-                let result = compile_expression(state, compilation_state, &expression, None);
+                let Some(result) = compile_expression(state, compilation_state, &expression, None)
+                else {
+                    return;
+                };
                 if result.data_type != *data_type {
-                    panic!(
-                        "Variable {} doesn't have the same type as the expression!",
-                        identifier
-                    );
+                    compilation_state.errors.push(Error {
+                        pos: expression.pos,
+                        msg: format!(
+                            "Cannot assign a value of type {:?} to a variable {} of type {:?}.",
+                            result.data_type, identifier, data_type
+                        ),
+                    });
                 }
                 match result.result_container {
                     ResultContainer::TempVariable(ref temp) => match *temp.borrow() {
@@ -93,13 +117,30 @@ pub fn compile_statement(
                             let left_result = compile_expression(
                                 state,
                                 compilation_state,
-                                &Expression::MemberAccess {
-                                    left: Box::new(Expression::Identifier(identifier.clone())),
-                                    right: Box::new(Expression::Identifier(member)),
+                                &ExpressionWithPos {
+                                    expression: Expression::MemberAccess {
+                                        left: Box::new(ExpressionWithPos {
+                                            expression: Expression::Identifier(identifier.clone()),
+                                            pos: expression.pos,
+                                        }),
+                                        right: Box::new(ExpressionWithPos {
+                                            expression: Expression::Identifier(member),
+                                            pos: expression.pos,
+                                        }),
+                                    },
+                                    pos: expression.pos,
                                 },
                                 None,
                             );
-                            let _ = compile_assigment(state, left_result, result);
+                            if let (Some(left_result), Some(result)) = (left_result, result) {
+                                let _ = compile_assignment(
+                                    state,
+                                    compilation_state,
+                                    left_result,
+                                    result,
+                                    expression.pos,
+                                );
+                            }
                         }
                     }
                     ResultContainer::ConstInt(value) => {
@@ -111,7 +152,7 @@ pub fn compile_statement(
                             value,
                             sizeofword(data_type),
                         );
-                    },
+                    }
                     ResultContainer::ConstChar(value) => {
                         state.asm.mov(
                             RegPointer {
@@ -121,12 +162,15 @@ pub fn compile_statement(
                             &value,
                             sizeofword(data_type),
                         );
-                    },
+                    }
                 }
             }
         }
         Statement::Return(expression) => {
-            let result = compile_expression(state, compilation_state, expression, Some(RAX));
+            let Some(result) = compile_expression(state, compilation_state, expression, Some(RAX))
+            else {
+                return;
+            };
 
             if result.data_type != state.current_function.prototype.return_type {
                 panic!("Trying to return a different data type than in the function declaration!");
@@ -141,9 +185,31 @@ pub fn compile_statement(
             scope,
             else_scope,
         } => {
-            let result = compile_expression(state, compilation_state, expression, None);
+            let Some(expression) = expression else {
+                compile_new_scope(state, compilation_state, scope);
+                if let Some(scope) = else_scope {
+                    compile_new_scope(state, compilation_state, scope);
+                }
+                return;
+            };
+            let Some(result) = compile_expression(state, compilation_state, expression, None)
+            else {
+                compile_new_scope(state, compilation_state, scope);
+                if let Some(scope) = else_scope {
+                    compile_new_scope(state, compilation_state, scope);
+                }
+                return;
+            };
             if result.data_type != DataType::Boolean {
-                panic!("If statement condition has to be a boolean!");
+                compilation_state.errors.push(Error {
+                    pos: expression.pos,
+                    msg: "If statement condition has to evaluate to a boolean.".to_string(),
+                });
+                compile_new_scope(state, compilation_state, scope);
+                if let Some(scope) = else_scope {
+                    compile_new_scope(state, compilation_state, scope);
+                }
+                return;
             }
 
             if let ResultContainer::Flag(flag) = result.result_container {
@@ -152,18 +218,9 @@ pub fn compile_statement(
                 state.asm.jmp_negated_flag(flag, &fmt!(".L{}", label_id));
 
                 let variables_len = state.variables.len();
-                let mut scope_state = ScopeState {
-                    iter: scope.iter().peekable(),
-                    stack_size_current: state.stack_size_current,
-                    max_stack_size: state.stack_size_current,
-                    variables: state.variables,
-                    current_function: state.current_function,
-                    asm: Asm::new(),
-                    used_registers: state.used_registers.clone(),
-                };
-                compile_scope(&mut scope_state, compilation_state);
-                state.max_stack_size = state.max_stack_size.max(scope_state.max_stack_size);
-                state.asm.append(scope_state.asm);
+                let (max_stack_size, asm) = compile_new_scope(state, compilation_state, scope);
+                state.max_stack_size = state.max_stack_size.max(max_stack_size);
+                state.asm.append(asm);
                 state.variables.truncate(variables_len);
 
                 if let Some(else_scope) = else_scope {
@@ -173,19 +230,11 @@ pub fn compile_statement(
                     state.asm.label(&(label_id - 1).to_string());
 
                     let variables_len = state.variables.len();
-                    let mut scope_state = ScopeState {
-                        iter: else_scope.iter().peekable(),
-                        stack_size_current: state.stack_size_current,
-                        max_stack_size: state.stack_size_current,
-                        current_function: state.current_function,
-                        variables: state.variables,
-                        asm: Asm::new(),
-                        used_registers: state.used_registers.clone(),
-                    };
-                    compile_scope(&mut scope_state, compilation_state);
-                    state.max_stack_size = state.max_stack_size.max(scope_state.max_stack_size);
+                    let (max_stack_size, asm) =
+                        compile_new_scope(state, compilation_state, else_scope);
+                    state.max_stack_size = state.max_stack_size.max(max_stack_size);
 
-                    state.asm.append(scope_state.asm);
+                    state.asm.append(asm);
                     state.asm.label(&fmt!(".L{}", label_id));
                     state.variables.truncate(variables_len);
                 } else {
@@ -199,11 +248,23 @@ pub fn compile_statement(
             let begin_label_id = compilation_state.unique_label_id;
             compilation_state.unique_label_id += 1;
             state.asm.label(&fmt!(".L{}", begin_label_id));
-
-            let result = compile_expression(state, compilation_state, expression, None);
+            let Some(expression) = expression else {
+                compile_new_scope(state, compilation_state, scope);
+                return;
+            };
+            let Some(result) = compile_expression(state, compilation_state, expression, None)
+            else {
+                compile_new_scope(state, compilation_state, scope);
+                return;
+            };
 
             if result.data_type != DataType::Boolean {
-                panic!("While statement condition has to be a boolean!");
+                compilation_state.errors.push(Error {
+                    pos: expression.pos,
+                    msg: "While statement condition has to evaluate to a boolean.".to_string(),
+                });
+                compile_new_scope(state, compilation_state, scope);
+                return;
             }
 
             if let ResultContainer::Flag(flag) = result.result_container {
@@ -241,11 +302,12 @@ pub fn compile_statement(
         } => {
             let variables_len = state.variables.len();
 
+            compile_statement(state, compilation_state, inital_statement);
+
             let begin_label_id = compilation_state.unique_label_id;
             compilation_state.unique_label_id += 1;
             state.asm.label(&fmt!(".L{}", begin_label_id));
 
-            compile_statement(state, compilation_state, inital_statement);
             let mut scope_state = ScopeState {
                 iter: scope.iter().peekable(),
                 stack_size_current: state.stack_size_current,
@@ -255,11 +317,22 @@ pub fn compile_statement(
                 asm: Asm::new(),
                 used_registers: state.used_registers.clone(),
             };
-            let result =
-                compile_expression(&mut scope_state, compilation_state, condition_expr, None);
+            let Some(result) =
+                compile_expression(&mut scope_state, compilation_state, condition_expr, None)
+            else {
+                compile_scope(&mut scope_state, compilation_state);
+                compile_expression(&mut scope_state, compilation_state, iteration_expr, None);
+                return;
+            };
 
             if result.data_type != DataType::Boolean {
-                panic!("While statement condition has to be a boolean!");
+                compilation_state.errors.push(Error {
+                    pos: condition_expr.pos,
+                    msg: "For statement condition has to evaluate to a boolean.".to_string(),
+                });
+                compile_scope(&mut scope_state, compilation_state);
+                compile_expression(&mut scope_state, compilation_state, iteration_expr, None);
+                return;
             }
 
             if let ResultContainer::Flag(flag) = result.result_container {
@@ -270,8 +343,7 @@ pub fn compile_statement(
                     .jmp_negated_flag(flag, &fmt!(".L{}", end_label_id));
 
                 compile_scope(&mut scope_state, compilation_state);
-                let _ =
-                    compile_expression(&mut scope_state, compilation_state, iteration_expr, None);
+                compile_expression(&mut scope_state, compilation_state, iteration_expr, None);
                 state.max_stack_size = state.max_stack_size.max(scope_state.max_stack_size);
                 state.asm.append(scope_state.asm);
                 state.asm.jmp(&fmt!(".L{}", begin_label_id));
@@ -282,7 +354,7 @@ pub fn compile_statement(
             }
         }
         Statement::Expression(expression) => {
-            let _ = compile_expression(state, compilation_state, expression, None);
+            compile_expression(state, compilation_state, expression, None);
         }
     }
 }

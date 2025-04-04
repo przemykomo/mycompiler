@@ -1,4 +1,4 @@
-use crate::tokenizer::DataType;
+use crate::tokenizer::{DataType, TokenPos};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -8,68 +8,89 @@ use asmutil::FloatRegister::*;
 pub fn compile_expression(
     state: &mut ScopeState,
     compilation_state: &mut CompilationState,
-    expression: &Expression,
+    expression: &ExpressionWithPos,
     result_hint: Option<Register>,
-) -> ExpressionResult {
-    match expression {
+) -> Option<ExpressionResult> {
+    match &expression.expression {
         Expression::IntLiteral(value) => {
             // let reg = force_get_any_free_register(state, &[], result_hint);
             // state.asm.mov(reg, *value, Word::QWORD);
             // let temp = Rc::new(RefCell::new(TempVariable::Register(reg)));
             // state.used_registers.insert(reg, temp.clone());
-            ExpressionResult {
+            Some(ExpressionResult {
                 data_type: DataType::Int,
                 result_container: ResultContainer::ConstInt(*value),
-            }
+            })
         }
         Expression::CharacterLiteral(c) => {
             // let reg = force_get_any_free_register(state, &[], result_hint);
             // state.asm.mov(reg, c, Word::BYTE);
             // let temp = Rc::new(RefCell::new(TempVariable::Register(reg)));
             // state.used_registers.insert(reg, temp.clone());
-            ExpressionResult {
+            Some(ExpressionResult {
                 data_type: DataType::Char,
                 result_container: ResultContainer::ConstChar(*c),
-            }
+            })
         }
         Expression::Identifier(identifier) => {
-            let variable = state
+            let Some(variable) = state
                 .variables
                 .iter()
                 .rev()
                 .find(|var| var.identifier.eq(identifier))
-                .expect(&fmt!("Undeclared variable: \"{}\"", identifier));
-            ExpressionResult {
+            else {
+                compilation_state.errors.push(Error {
+                    pos: expression.pos,
+                    msg: format!("Undeclared variable: \"{}\"", identifier),
+                });
+                return None;
+            };
+
+            Some(ExpressionResult {
                 data_type: variable.data_type.clone(),
                 result_container: ResultContainer::IdentifierWithOffset {
                     identifier: identifier.clone(),
                     offset: 0,
                 },
-            }
+            })
         }
         Expression::ArraySubscript {
             identifier,
             element,
         } => {
-            let variable = state
+            let Some(variable) = state
                 .variables
                 .iter()
                 .rev()
                 .find(|var| var.identifier.eq(identifier))
-                .expect(&fmt!("Undeclared variable: \"{}\"", identifier));
+            else {
+                compilation_state.errors.push(Error {
+                    pos: expression.pos,
+                    msg: format!("Undeclared variable: \"{}\"", identifier),
+                });
+                return None;
+            };
             if let DataType::Array {
                 data_type: _,
                 size: _,
             } = variable.data_type.clone()
             {
                 //let stack_location = variable.stack_location.clone();
-                let result = compile_expression(state, compilation_state, element, None);
+                let result = compile_expression(state, compilation_state, &element, None)?;
                 if result.data_type != DataType::Int {
-                    panic!("Array index must be an integer!");
+                    compilation_state.errors.push(Error {
+                        pos: element.pos,
+                        msg: "Array index must be an integer!".to_string(),
+                    });
+                    return None;
                 }
                 todo!("Array subscripts");
             } else {
-                panic!("{} is not an array type!", identifier);
+                compilation_state.errors.push(Error {
+                    pos: element.pos,
+                    msg: format!("{} is not an array type!", identifier),
+                });
+                return None;
             }
         }
         Expression::ArithmeticExpression {
@@ -77,13 +98,18 @@ pub fn compile_expression(
             right,
             operator,
         } => {
-            let right_result = compile_expression(state, compilation_state, right, None);
+            let right_result = compile_expression(state, compilation_state, &right, None)?;
             let right_result = move_to_reg_if_needed(state, right_result);
-            let left_result = compile_expression(state, compilation_state, left, result_hint);
+            let left_result = compile_expression(state, compilation_state, &left, result_hint)?;
             let left_result = move_to_reg_if_needed(state, left_result);
 
             if !left_result.data_type.eq(&right_result.data_type) {
-                panic!("Cannot do arithmetic operations on values of different data types!");
+                compilation_state.errors.push(Error {
+                    pos: expression.pos,
+                    msg: "Cannot do arithmetic operations on values of different data types!"
+                        .to_string(),
+                });
+                return None;
             }
 
             match left_result.data_type {
@@ -93,26 +119,35 @@ pub fn compile_expression(
                         unreachable!()
                     };
 
-
                     match right_result.result_container {
                         ResultContainer::TempVariable(right_temp) => {
-                            let TempVariable::Register(right_reg) = right_temp.borrow().clone() else {
+                            let TempVariable::Register(right_reg) = right_temp.borrow().clone()
+                            else {
                                 unreachable!()
                             };
-                            compile_arithmetic_int_expression(state, left_temp.clone(), right_reg, operator);
+                            compile_arithmetic_int_expression(
+                                state,
+                                left_temp.clone(),
+                                right_reg,
+                                &operator,
+                            );
                             state.used_registers.remove(&right_reg);
-                        },
+                        }
                         ResultContainer::ConstInt(right_const) => {
-                            compile_arithmetic_int_expression(state, left_temp.clone(), right_const, operator);
-                        },
-                        _ => unreachable!()
+                            compile_arithmetic_int_expression(
+                                state,
+                                left_temp.clone(),
+                                right_const,
+                                &operator,
+                            );
+                        }
+                        _ => unreachable!(),
                     }
 
-
-                    ExpressionResult {
+                    Some(ExpressionResult {
                         data_type: DataType::Int,
                         result_container: ResultContainer::TempVariable(left_temp),
-                    }
+                    })
                 }
                 DataType::Float => {
                     match operator {
@@ -137,10 +172,10 @@ pub fn compile_expression(
                             state.asm.divss(XMM0, XMM1);
                         }
                     }
-                    ExpressionResult {
+                    Some(ExpressionResult {
                         data_type: DataType::Float,
                         result_container: ResultContainer::FloatRegister,
-                    }
+                    })
                 }
                 _ => panic!("Cannot do an arithmetic operation!"),
             }
@@ -150,12 +185,16 @@ pub fn compile_expression(
             right,
             operator,
         } => {
-            let right_result = compile_expression(state, compilation_state, right, None);
+            let right_result = compile_expression(state, compilation_state, &right, None)?;
             let right_result = move_to_reg_if_needed(state, right_result);
-            let left_result = compile_expression(state, compilation_state, left, None);
+            let left_result = compile_expression(state, compilation_state, &left, None)?;
             let left_result = move_to_reg_if_needed(state, left_result);
             if right_result.data_type != left_result.data_type {
-                panic!("Cannot compare different data types!");
+                compilation_state.errors.push(Error {
+                    pos: expression.pos,
+                    msg: "Cannot compare different data types!".to_string(),
+                });
+                return None;
             }
             let size = sizeofword(&left_result.data_type);
 
@@ -178,22 +217,22 @@ pub fn compile_expression(
             //todo load the reslts into registers to compare if they happen to be booleans
 
             match operator {
-                ComparisonOperator::CompareEqual => ExpressionResult {
+                ComparisonOperator::CompareEqual => Some(ExpressionResult {
                     data_type: DataType::Boolean,
                     result_container: ResultContainer::Flag(Flag::EQUAL),
-                },
-                ComparisonOperator::CompareLarger => ExpressionResult {
+                }),
+                ComparisonOperator::CompareLarger => Some(ExpressionResult {
                     data_type: DataType::Boolean,
                     result_container: ResultContainer::Flag(Flag::LARGER),
-                },
-                ComparisonOperator::CompareSmaller => ExpressionResult {
+                }),
+                ComparisonOperator::CompareSmaller => Some(ExpressionResult {
                     data_type: DataType::Boolean,
                     result_container: ResultContainer::Flag(Flag::SMALLER),
-                },
+                }),
             }
         }
         Expression::Dereference(expression) => {
-            let result = compile_expression(state, compilation_state, expression, result_hint);
+            let result = compile_expression(state, compilation_state, &expression, result_hint)?;
             let result = move_to_reg_if_needed(state, result);
             let ResultContainer::TempVariable(temp) = result.result_container else {
                 unreachable!()
@@ -206,27 +245,37 @@ pub fn compile_expression(
                 state
                     .asm
                     .mov(reg, RegPointer { reg, offset: 0 }, Word::QWORD);
-                ExpressionResult {
+                Some(ExpressionResult {
                     data_type: *data_type,
                     result_container: ResultContainer::TempVariable(temp),
-                }
+                })
             } else {
-                panic!("Cannot dereference a non pointer!");
+                compilation_state.errors.push(Error {
+                    pos: expression.pos,
+                    msg: "Cannot dereference a non pointer.".to_string(),
+                });
+                return None;
             }
         }
         Expression::AddressOf(expression) => {
-            let result = compile_expression(state, compilation_state, expression, None);
+            let result = compile_expression(state, compilation_state, &expression, None)?;
 
             if let ResultContainer::IdentifierWithOffset { identifier, offset } =
                 result.result_container
             {
                 let reg = force_get_any_free_register(state, &[], result_hint);
-                let variable = state
+                let Some(variable) = state
                     .variables
                     .iter()
                     .rev()
                     .find(|var| var.identifier.eq(&identifier))
-                    .expect(&fmt!("Undeclared variable: \"{}\"", identifier));
+                else {
+                    compilation_state.errors.push(Error {
+                        pos: expression.pos,
+                        msg: format!("Undeclared variable: \"{}\"", identifier),
+                    });
+                    return None;
+                };
 
                 state.asm.lea(
                     reg,
@@ -236,14 +285,18 @@ pub fn compile_expression(
                     }),
                     Word::QWORD,
                 );
-                ExpressionResult {
+                Some(ExpressionResult {
                     data_type: DataType::Pointer(Box::new(variable.data_type.clone())),
                     result_container: ResultContainer::TempVariable(Rc::new(RefCell::new(
                         TempVariable::Register(reg),
                     ))),
-                }
+                })
             } else {
-                panic!("Cannot take address of an rvalue!");
+                compilation_state.errors.push(Error {
+                    pos: expression.pos,
+                    msg: "Canno take an adress of an rvalue.".to_string(),
+                });
+                return None;
             }
         }
         Expression::StringLiteral(text) => {
@@ -262,25 +315,25 @@ pub fn compile_expression(
             state
                 .asm
                 .lea(reg, Memory::Label(fmt!(".String{}", id)), Word::QWORD);
-            ExpressionResult {
+            Some(ExpressionResult {
                 data_type: DataType::Pointer(Box::new(DataType::Char)),
                 result_container: ResultContainer::TempVariable(Rc::new(RefCell::new(
                     TempVariable::Register(reg),
                 ))),
-            }
+            })
         }
         Expression::FunctionCall(function_call) => {
-            compile_function_call(compilation_state, state, function_call)
+            compile_function_call(compilation_state, state, &function_call)
         }
         Expression::BoolLiteral(value) => {
             let reg = force_get_any_free_register(state, &[], result_hint);
             state.asm.mov(reg, *value as i32, Word::QWORD);
-            ExpressionResult {
+            Some(ExpressionResult {
                 data_type: DataType::Boolean,
                 result_container: ResultContainer::TempVariable(Rc::new(RefCell::new(
                     TempVariable::Register(reg),
                 ))),
-            }
+            })
         }
         Expression::FloatLiteral(value) => {
             let id: usize;
@@ -294,18 +347,18 @@ pub fn compile_expression(
                 compilation_state.float_constants.insert(value.clone(), id);
             }
             state.asm.movss(XMM0, fmt!(".Float{}", id));
-            ExpressionResult {
+            Some(ExpressionResult {
                 data_type: DataType::Float,
                 result_container: ResultContainer::FloatRegister,
-            }
+            })
         }
         Expression::Assigment { left, right } => {
-            let left_result = compile_expression(state, compilation_state, left, None);
-            let right_result = compile_expression(state, compilation_state, right, None);
-            compile_assigment(state, left_result, right_result)
+            let left_result = compile_expression(state, compilation_state, &left, None)?;
+            let right_result = compile_expression(state, compilation_state, &right, None)?;
+            compile_assignment(state, compilation_state, left_result, right_result, expression.pos)
         }
         Expression::MemberAccess { left, right } => {
-            let left = compile_expression(state, compilation_state, left, None);
+            let left = compile_expression(state, compilation_state, &left, None)?;
 
             if let DataType::Struct(left_identifier) = left.data_type {
                 if let ResultContainer::IdentifierWithOffset { identifier, offset } =
@@ -314,36 +367,53 @@ pub fn compile_expression(
                     let struct_type = compilation_state
                         .struct_types
                         .get(&left_identifier)
-                        .expect("Expected struct to exist.");
+                        .expect("Expected struct to exist. Should never happen.");
 
-                    match (*right).as_ref() {
+                    match &right.expression {
                         Expression::Identifier(right_identifier) => {
-                            let member = struct_type
+                            let Some(member) = struct_type
                                 .members
                                 .iter()
                                 .find(|member| member.member.identifier.eq(right_identifier))
-                                .expect("Expected member of struct to exist.");
-                            ExpressionResult {
+                            else {
+                                compilation_state.errors.push(Error {
+                                    pos: expression.pos,
+                                    msg: format!(
+                                        "Struct `{}` doesn't contain a member named `{}`.",
+                                        left_identifier, right_identifier
+                                    ),
+                                });
+                                return None;
+                            };
+                            Some(ExpressionResult {
                                 data_type: member.member.data_type.clone(),
                                 result_container: ResultContainer::IdentifierWithOffset {
                                     identifier: identifier.clone(),
                                     offset: offset + member.offset,
                                 },
-                            }
+                            })
                         }
                         Expression::ArraySubscript { .. } => todo!(),
                         Expression::FunctionCall(_) => todo!(),
                         _ => panic!("Invalid member access expression!"),
                     }
                 } else {
-                    panic!("Member access operator used on an rvalue!");
+                    compilation_state.errors.push(Error {
+                        pos: expression.pos,
+                        msg: "Cannot access a member of an rvalue.".to_string(),
+                    });
+                    return None;
                 }
             } else {
-                panic!("Member access operator used on a non-struct variable!");
+                compilation_state.errors.push(Error {
+                    pos: expression.pos,
+                    msg: "Cannot access a member of a non struct variable.".to_string(),
+                });
+                return None;
             }
         }
         Expression::Increment(expression) => {
-            let result = compile_expression(state, compilation_state, expression, None);
+            let result = compile_expression(state, compilation_state, &expression, None)?;
 
             if let ExpressionResult {
                 ref data_type,
@@ -354,12 +424,18 @@ pub fn compile_expression(
                     },
             } = result
             {
-                let variable = state
+                let Some(variable) = state
                     .variables
                     .iter()
                     .rev()
                     .find(|var| var.identifier.eq(identifier))
-                    .expect(&fmt!("Undeclared variable: \"{}\"", &identifier));
+                else {
+                    compilation_state.errors.push(Error {
+                        pos: expression.pos,
+                        msg: format!("Undeclared variable: \"{}\"", identifier),
+                    });
+                    return None;
+                };
                 let stack_location = variable.stack_location.clone();
 
                 if is_float(&data_type) {
@@ -375,13 +451,17 @@ pub fn compile_expression(
                     );
                 }
 
-                result
+                Some(result)
             } else {
-                panic!("Trying to increment an rvalue!");
+                compilation_state.errors.push(Error {
+                    pos: expression.pos,
+                    msg: "Cannot increment an rvalue.".to_string(),
+                });
+                return None;
             }
         }
         Expression::Decrement(expression) => {
-            let result = compile_expression(state, compilation_state, expression, None);
+            let result = compile_expression(state, compilation_state, &expression, None)?;
 
             if let ExpressionResult {
                 ref data_type,
@@ -392,12 +472,18 @@ pub fn compile_expression(
                     },
             } = result
             {
-                let variable = state
+                let Some(variable) = state
                     .variables
                     .iter()
                     .rev()
                     .find(|var| var.identifier.eq(identifier))
-                    .expect(&fmt!("Undeclared variable: \"{}\"", &identifier));
+                else {
+                    compilation_state.errors.push(Error {
+                        pos: expression.pos,
+                        msg: format!("Undeclared variable: \"{}\"", identifier),
+                    });
+                    return None;
+                };
                 let stack_location = variable.stack_location.clone();
 
                 if is_float(&data_type) {
@@ -413,51 +499,58 @@ pub fn compile_expression(
                     );
                 }
 
-                result
+                Some(result)
             } else {
-                panic!("Trying to decrement an rvalue!");
+                compilation_state.errors.push(Error {
+                    pos: expression.pos,
+                    msg: "Cannot decrement an rvalue.".to_string(),
+                });
+                return None;
             }
         }
         Expression::StructLiteral {
             identifier,
             members,
         } => {
-            let mut results: Vec<(String, ExpressionResult)> = Vec::new();
+            let mut results: Vec<(String, Option<ExpressionResult>)> = Vec::new();
             for (member, expression) in members {
                 results.push((
                     member.clone(),
-                    compile_expression(state, compilation_state, expression, None),
+                    expression
+                        .as_ref()
+                        .and_then(|e| compile_expression(state, compilation_state, &e, None)),
                 ));
             }
 
-            ExpressionResult {
+            Some(ExpressionResult {
                 data_type: DataType::Struct(identifier.clone()),
                 result_container: ResultContainer::StructLiteral {
                     identifier: identifier.clone(),
                     members: results,
                 },
-            }
+            })
         }
     }
 }
 
-fn compile_arithmetic_int_expression(state: &mut ScopeState<'_>, left_temp: Rc<RefCell<TempVariable>>, right: impl Operand, operator: &ArithmeticOperator) {
+fn compile_arithmetic_int_expression(
+    state: &mut ScopeState<'_>,
+    left_temp: Rc<RefCell<TempVariable>>,
+    right: impl Operand,
+    operator: &ArithmeticOperator,
+) {
     let TempVariable::Register(left_reg) = left_temp.borrow().clone() else {
         unreachable!()
     };
 
     match operator {
         ArithmeticOperator::Add => state.asm.add(left_reg, right, Word::QWORD),
-        ArithmeticOperator::Subtract => {
-            state.asm.sub(left_reg, right, Word::QWORD)
-        }
-        ArithmeticOperator::Multiply => {
-            state.asm.imul(left_reg, right, Word::QWORD)
-        }
+        ArithmeticOperator::Subtract => state.asm.sub(left_reg, right, Word::QWORD),
+        ArithmeticOperator::Multiply => state.asm.imul(left_reg, right, Word::QWORD),
         ArithmeticOperator::Divide => {
             if left_reg != RAX {
                 free_register(state, RAX, &[]); //TODO: protect
-                                                                                 //right register
+                                                //right register
                 state.asm.mov(RAX, left_reg, Word::QWORD);
                 state.used_registers.remove(&left_reg);
                 *left_temp.borrow_mut() = TempVariable::Register(RAX);
@@ -472,21 +565,31 @@ fn compile_arithmetic_int_expression(state: &mut ScopeState<'_>, left_temp: Rc<R
     }
 }
 
-pub fn compile_assigment(
+pub fn compile_assignment(
     state: &mut ScopeState,
+    compilation_state: &mut CompilationState,
     left_result: ExpressionResult,
     right_result: ExpressionResult,
-) -> ExpressionResult {
+    pos: TokenPos,
+) -> Option<ExpressionResult> {
     let right_result = move_to_reg_if_needed(state, right_result);
 
     if right_result.data_type != left_result.data_type {
-        panic!("Cannot assing value of a different data type!");
+        compilation_state.errors.push(Error {
+            pos,
+            msg: format!(
+                "Cannot assign `{:?}` to a variable of type `{:?}`.",
+                right_result.data_type, left_result.data_type
+            ),
+        });
+        return None;
     }
 
     if let ExpressionResult {
         data_type,
         result_container: ResultContainer::IdentifierWithOffset { identifier, offset },
-    } = left_result {
+    } = left_result
+    {
         let variable = state
             .variables
             .iter()
@@ -511,7 +614,6 @@ pub fn compile_assigment(
             todo!();
             //state.assembly.push_str(&format!("movd eax, xmm0\nmov {} [rbp - {}], {}\n", sizeofword(&data_type), stack_location - offset, reg_from_size(size, )));
         } else {
-
             match right_result.result_container {
                 ResultContainer::TempVariable(ref temp) => {
                     let TempVariable::Register(reg) = temp.borrow().clone() else {
@@ -525,7 +627,7 @@ pub fn compile_assigment(
                         reg,
                         sizeofword(&data_type),
                     );
-                },
+                }
                 ResultContainer::ConstInt(value) => {
                     state.asm.mov(
                         RegPointer {
@@ -535,7 +637,7 @@ pub fn compile_assigment(
                         value,
                         sizeofword(&data_type),
                     );
-                },
+                }
                 ResultContainer::ConstChar(value) => {
                     state.asm.mov(
                         RegPointer {
@@ -545,14 +647,18 @@ pub fn compile_assigment(
                         &value,
                         sizeofword(&data_type),
                     );
-                },
-                _ => unreachable!()
+                }
+                _ => unreachable!(),
             }
         }
 
-        right_result
+        Some(right_result)
     } else {
-        panic!("Trying to assign value to rvalue!");
+        compilation_state.errors.push(Error {
+            pos,
+            msg: "Cannot assign to an rvalue.".to_string(),
+        });
+        None
     }
 }
 
@@ -562,43 +668,43 @@ fn move_to_reg_if_needed(
 ) -> ExpressionResult {
     match expression_result.result_container {
         ResultContainer::TempVariable(ref temp) => {
-                let temp = temp.clone();
-                let temp = temp.borrow();
-                match *temp {
-                    TempVariable::Register(_) => expression_result,
-                    TempVariable::Stack(_) => todo!(),
-                }
+            let temp = temp.clone();
+            let temp = temp.borrow();
+            match *temp {
+                TempVariable::Register(_) => expression_result,
+                TempVariable::Stack(_) => todo!(),
             }
+        }
         ResultContainer::FloatRegister => todo!(),
         ResultContainer::Flag(_) => todo!(),
         ResultContainer::IdentifierWithOffset { identifier, offset } => {
-                let variable = state
-                    .variables
-                    .iter()
-                    .rev()
-                    .find(|var| var.identifier.eq(&identifier))
-                    .expect(&fmt!("Undeclared variable: \"{}\"", identifier));
-                if let Some(reg) = get_any_free_register(state) {
-                    state.asm.mov(
-                        reg,
-                        RegPointer {
-                            reg: RBP,
-                            offset: -(variable.stack_location - offset),
-                        },
-                        Word::QWORD,
-                    );
-                    let temp = Rc::new(RefCell::new(TempVariable::Register(reg)));
-                    expression_result.result_container = ResultContainer::TempVariable(temp.clone());
-                    state.used_registers.insert(reg, temp);
-                    expression_result
-                } else {
-                    todo!();
-                }
+            let variable = state
+                .variables
+                .iter()
+                .rev()
+                .find(|var| var.identifier.eq(&identifier))
+                .expect(&fmt!("Undeclared variable: \"{}\"", identifier));
+            if let Some(reg) = get_any_free_register(state) {
+                state.asm.mov(
+                    reg,
+                    RegPointer {
+                        reg: RBP,
+                        offset: -(variable.stack_location - offset),
+                    },
+                    Word::QWORD,
+                );
+                let temp = Rc::new(RefCell::new(TempVariable::Register(reg)));
+                expression_result.result_container = ResultContainer::TempVariable(temp.clone());
+                state.used_registers.insert(reg, temp);
+                expression_result
+            } else {
+                todo!();
             }
+        }
         ResultContainer::StructLiteral {
-                identifier: _,
-                members: _,
-            } => todo!(),
+            identifier: _,
+            members: _,
+        } => todo!(),
         ResultContainer::ConstInt(_) => expression_result,
         ResultContainer::ConstChar(_) => expression_result,
     }

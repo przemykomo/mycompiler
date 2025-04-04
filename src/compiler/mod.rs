@@ -1,5 +1,5 @@
 use crate::parser::*;
-use crate::tokenizer::DataType;
+use crate::tokenizer::{DataType, Error};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::iter::Peekable;
@@ -22,7 +22,8 @@ pub struct CompilationState<'a> {
     float_constants: HashMap<String, usize>,
     unique_label_id: i32,
     parsed_unit: &'a ParsedUnit,
-    struct_types: HashMap<String, StructType>
+    struct_types: HashMap<String, StructType>,
+    errors: Vec<Error>,
 }
 
 pub struct ScopeState<'a> {
@@ -32,31 +33,31 @@ pub struct ScopeState<'a> {
     variables: &'a mut Vec<Variable>,
     current_function: &'a FunctionDefinition,
     asm: Asm,
-    used_registers: RegMap
+    used_registers: RegMap,
 }
 
 #[derive(Debug)]
 struct Variable {
     identifier: String,
     stack_location: i32,
-    data_type: DataType
+    data_type: DataType,
 }
 
 struct StructType {
     members: Vec<StructMemberWithOffset>,
-    size: i32
+    size: i32,
 }
 
 struct StructMemberWithOffset {
     member: StructMember,
-    offset: i32
+    offset: i32,
 }
 
 #[must_use]
 #[derive(Debug)]
 pub struct ExpressionResult {
     data_type: DataType,
-    result_container: ResultContainer
+    result_container: ResultContainer,
 }
 
 #[derive(Debug)]
@@ -64,18 +65,24 @@ enum ResultContainer {
     TempVariable(Rc<RefCell<TempVariable>>),
     FloatRegister,
     Flag(Flag),
-    IdentifierWithOffset { identifier: String, offset: i32 },
+    IdentifierWithOffset {
+        identifier: String,
+        offset: i32,
+    },
     #[allow(dead_code)] // TODO: Possibly do some checking if the struct literal matches the
-                        // definition of the struct with the same identifier
-    StructLiteral { identifier: String, members: Vec<(String, ExpressionResult)> },
+    // definition of the struct with the same identifier
+    StructLiteral {
+        identifier: String,
+        members: Vec<(String, Option<ExpressionResult>)>,
+    },
     ConstInt(i32),
-    ConstChar(char)
+    ConstChar(char),
 }
 
 #[derive(Debug, Eq, Hash, PartialEq, Clone, Copy)]
 pub enum TempVariable {
     Register(Register),
-    Stack(i32)
+    Stack(i32),
 }
 
 #[derive(Debug, Eq, Hash, PartialEq, Clone, Copy)]
@@ -103,7 +110,7 @@ use Register::*;
 enum Flag {
     EQUAL,
     LARGER,
-    SMALLER
+    SMALLER,
 }
 
 #[macro_export]
@@ -116,7 +123,9 @@ macro_rules! fmt {
 }
 pub(crate) use fmt;
 
-const USED_REGISTERS: [Register; 14] = [R15, R14, R13, R12, R11, R10, RBX, RAX, R9, R8, RCX, RDX, RSI, RDI];
+const USED_REGISTERS: [Register; 14] = [
+    R15, R14, R13, R12, R11, R10, RBX, RAX, R9, R8, RCX, RDX, RSI, RDI,
+];
 
 fn get_any_free_register(state: &ScopeState) -> Option<Register> {
     for reg in USED_REGISTERS {
@@ -127,7 +136,11 @@ fn get_any_free_register(state: &ScopeState) -> Option<Register> {
     return None;
 }
 
-fn force_get_any_free_register(state: &mut ScopeState, protected_registers: &[Register], hint: Option<Register>) -> Register {
+fn force_get_any_free_register(
+    state: &mut ScopeState,
+    protected_registers: &[Register],
+    hint: Option<Register>,
+) -> Register {
     if let Some(reg) = hint {
         if !state.used_registers.contains_key(&reg) {
             return reg;
@@ -136,10 +149,21 @@ fn force_get_any_free_register(state: &mut ScopeState, protected_registers: &[Re
     if let Some(reg) = get_any_free_register(state) {
         reg
     } else {
-        let Some(oldest_temp) = state.used_registers.get_oldest(protected_registers) else { unreachable!() };
-        let TempVariable::Register(reg) = oldest_temp.borrow().clone() else { unreachable!() };
+        let Some(oldest_temp) = state.used_registers.get_oldest(protected_registers) else {
+            unreachable!()
+        };
+        let TempVariable::Register(reg) = oldest_temp.borrow().clone() else {
+            unreachable!()
+        };
         state.stack_size_current += 8;
-        state.asm.mov(RegPointer { reg: RBP, offset: -state.stack_size_current }, reg, Word::QWORD);
+        state.asm.mov(
+            RegPointer {
+                reg: RBP,
+                offset: -state.stack_size_current,
+            },
+            reg,
+            Word::QWORD,
+        );
         state.used_registers.remove(&reg);
         *oldest_temp.borrow_mut() = TempVariable::Stack(state.stack_size_current);
         reg
@@ -147,9 +171,12 @@ fn force_get_any_free_register(state: &mut ScopeState, protected_registers: &[Re
 }
 
 fn free_register(state: &mut ScopeState, target_reg: Register, protected_registers: &[Register]) {
-    if !state.used_registers.contains_key(&target_reg) { return };
+    if !state.used_registers.contains_key(&target_reg) {
+        return;
+    };
     for free_reg in USED_REGISTERS {
-        if !protected_registers.contains(&free_reg) && !state.used_registers.contains_key(&free_reg) {
+        if !protected_registers.contains(&free_reg) && !state.used_registers.contains_key(&free_reg)
+        {
             state.asm.mov(free_reg, target_reg, Word::QWORD);
             if let Some(temp) = state.used_registers.remove(&target_reg) {
                 *temp.borrow_mut() = TempVariable::Register(free_reg);
@@ -158,10 +185,21 @@ fn free_register(state: &mut ScopeState, target_reg: Register, protected_registe
             return;
         }
     }
-    let Some(temp) = state.used_registers.remove(&target_reg) else { unreachable!() };
-    let TempVariable::Register(reg) = temp.borrow().clone() else { unreachable!() };
+    let Some(temp) = state.used_registers.remove(&target_reg) else {
+        unreachable!()
+    };
+    let TempVariable::Register(reg) = temp.borrow().clone() else {
+        unreachable!()
+    };
     state.stack_size_current += 8;
-    state.asm.mov(RegPointer { reg: RBP, offset: -state.stack_size_current }, reg, Word::QWORD);
+    state.asm.mov(
+        RegPointer {
+            reg: RBP,
+            offset: -state.stack_size_current,
+        },
+        reg,
+        Word::QWORD,
+    );
     state.used_registers.remove(&reg);
     *temp.borrow_mut() = TempVariable::Stack(state.stack_size_current);
 }
@@ -171,10 +209,17 @@ fn sizeof(data_type: &DataType, compilation_state: &CompilationState) -> i32 {
         DataType::Int | DataType::Pointer { .. } => 8,
         DataType::Float => 4,
         DataType::Char | DataType::Boolean => 1,
-        DataType::Array { data_type: _, size: _ } => todo!(),
+        DataType::Array {
+            data_type: _,
+            size: _,
+        } => todo!(),
         DataType::Void => panic!("sizeof(void) is invalid!"),
         DataType::Struct(identifier) => {
-            compilation_state.struct_types.get(identifier).expect("Struct type \"{}\" is missing!").size
+            compilation_state
+                .struct_types
+                .get(identifier)
+                .expect("Struct type \"{}\" is missing!")
+                .size
         }
     }
 }
@@ -186,7 +231,7 @@ pub fn sizeofword(data_type: &DataType) -> Word {
         DataType::Char | DataType::Boolean => Word::BYTE,
         DataType::Array { data_type, size: _ } => sizeofword(data_type),
         DataType::Void => panic!("sizeofword(void) is invalid!"),
-        DataType::Struct(_) => panic!("sizeofword(struct) is invalid!")
+        DataType::Struct(_) => panic!("sizeofword(struct) is invalid!"),
     }
 }
 
@@ -213,35 +258,92 @@ fn reg_from_size(size: i32, reg: Register) -> &'static str {
     }
 }
 
-fn get_function(compilation_state: &CompilationState, identifier: &str) -> Option<FunctionPrototype> {
-    if let Some(function) = compilation_state.parsed_unit.functions.iter().find(|f| f.prototype.name.eq(identifier)) {
+fn get_function(
+    compilation_state: &CompilationState,
+    identifier: &str,
+) -> Option<FunctionPrototype> {
+    if let Some(function) = compilation_state
+        .parsed_unit
+        .functions
+        .iter()
+        .find(|f| f.prototype.name.eq(identifier))
+    {
         Some(function.prototype.clone())
     } else {
-        compilation_state.parsed_unit.function_declarations.iter().find(|f| f.name.eq(identifier)).cloned()
+        compilation_state
+            .parsed_unit
+            .function_declarations
+            .iter()
+            .find(|f| f.name.eq(identifier))
+            .cloned()
     }
 }
 
-fn compile_function_call(compilation_state: &mut CompilationState, state: &mut ScopeState, function_call: &FunctionCall) -> ExpressionResult {
-    let Some(function) = get_function(compilation_state, &function_call.identifier) else { panic!("Cannot find function \"{}\"", function_call.identifier) };
+fn compile_function_call(
+    compilation_state: &mut CompilationState,
+    state: &mut ScopeState,
+    function_call: &FunctionCall,
+) -> Option<ExpressionResult> {
+    let Some(function) = get_function(compilation_state, &function_call.identifier) else {
+        compilation_state.errors.push(Error {
+            pos: function_call.pos,
+            msg: format!("Cannot find function \"{}\"", function_call.identifier),
+        });
+        return None;
+    };
     if function_call.arguments.len() != function.arguments.len() {
-        panic!("Passed wrong amoung of parameters to function \"{}\"", function.name);
+        compilation_state.errors.push(Error {
+            pos: function_call.pos,
+            msg: format!(
+                "Passed wrong amount of parameters to function \"{}\"",
+                function.name
+            ),
+        });
+        return None;
     }
 
     const SCRATCH_REGS: [Register; 9] = [RDI, RSI, RDX, RCX, R8, R9, RAX, R10, R11];
 
-    let floats_index = function.arguments.iter().filter(|data_type| is_float(data_type)).count();
+    let floats_index = function
+        .arguments
+        .iter()
+        .filter(|data_type| is_float(data_type))
+        .count();
     let mut integer_amount = function.arguments.len() - floats_index;
     let mut integer_index = integer_amount;
 
-    let results: Vec<ExpressionResult> =  function_call.arguments.iter().enumerate().rev().map(|(i, argument)| {
-        let data_type = function.arguments.get(i).expect("Already checked for a number of arguments, should never happen.").clone();
-        let result = expression::compile_expression(state, compilation_state, argument, if i <= 5 { Some(SCRATCH_REGS[i]) } else { None });
+    let results: Option<Vec<ExpressionResult>> = function_call
+        .arguments
+        .iter()
+        .enumerate()
+        .rev()
+        .map(|(i, argument)| {
+            let data_type = function
+                .arguments
+                .get(i)
+                .expect("Already checked for a number of arguments, should never happen.")
+                .clone();
+            let result = expression::compile_expression(
+                state,
+                compilation_state,
+                argument,
+                if i <= 5 { Some(SCRATCH_REGS[i]) } else { None },
+            )?;
 
-        if result.data_type != data_type {
-            panic!("Passed argument of a wrong type! Expected: {:?}, got: {:?}", data_type, result.data_type);
-        }
-        result
-    }).collect();
+            if result.data_type != data_type {
+                compilation_state.errors.push(Error {
+                    pos: argument.pos,
+                    msg: format!(
+                        "Passed argument of a wrong type! Expected: {:?}, got: {:?}",
+                        data_type, result.data_type
+                    ),
+                });
+                return None;
+            }
+            Some(result)
+        })
+        .collect();
+    let results = results?;
 
     for result in results.iter() {
         if is_float(&result.data_type) {
@@ -268,22 +370,42 @@ fn compile_function_call(compilation_state: &mut CompilationState, state: &mut S
                     3 => RCX,
                     4 => R8,
                     5 => R9,
-                    _ => unreachable!()
+                    _ => unreachable!(),
                 };
                 match &result.result_container {
                     ResultContainer::TempVariable(temp) => {
-                        let TempVariable::Register(reg) = temp.borrow().clone() else { todo!() };
+                        let TempVariable::Register(reg) = temp.borrow().clone() else {
+                            todo!()
+                        };
                         if reg != target_reg {
                             free_register(state, target_reg, &SCRATCH_REGS);
                             state.asm.mov(target_reg, reg, Word::QWORD);
                         }
-                    },
+                    }
                     ResultContainer::IdentifierWithOffset { identifier, offset } => {
                         free_register(state, target_reg, &SCRATCH_REGS);
-                        let variable = state.variables.iter().rev().find(|var| var.identifier.eq(identifier)).expect(&fmt!("Undeclared variable: \"{}\"", identifier));
-                        state.asm.mov(target_reg, RegPointer { reg: RBP, offset: -(variable.stack_location - offset) }, Word::QWORD);
-                    },
-                    _ => todo!("{:?}", result.result_container)
+                        let Some(variable) = state
+                            .variables
+                            .iter()
+                            .rev()
+                            .find(|var| var.identifier.eq(identifier))
+                        else {
+                            compilation_state.errors.push(Error {
+                                pos: function_call.pos,
+                                msg: format!("Undeclared variable: \"{}\"", identifier),
+                            });
+                            return None;
+                        };
+                        state.asm.mov(
+                            target_reg,
+                            RegPointer {
+                                reg: RBP,
+                                offset: -(variable.stack_location - offset),
+                            },
+                            Word::QWORD,
+                        );
+                    }
+                    _ => todo!("{:?}", result.result_container),
                 }
             }
         }
@@ -299,26 +421,37 @@ fn compile_function_call(compilation_state: &mut CompilationState, state: &mut S
 
     state.asm.call(&function_call.identifier);
     if is_float(&function.return_type) {
-        return ExpressionResult { data_type: function.return_type.clone(), result_container: ResultContainer::FloatRegister };
+        return Some(ExpressionResult {
+            data_type: function.return_type.clone(),
+            result_container: ResultContainer::FloatRegister,
+        });
     }
-    return ExpressionResult {
+    return Some(ExpressionResult {
         data_type: function.return_type.clone(),
-        result_container: ResultContainer::TempVariable(Rc::new(RefCell::new(TempVariable::Register(Register::RAX))))
-    };
+        result_container: ResultContainer::TempVariable(Rc::new(RefCell::new(
+            TempVariable::Register(Register::RAX),
+        ))),
+    });
 }
 
 fn is_float(data_type: &DataType) -> bool {
     data_type.eq(&DataType::Float)
 }
 
-pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
+pub struct CompiledUnit {
+    pub asm: String,
+    pub errors: Vec<Error>,
+}
+
+pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> CompiledUnit {
     let mut compilation_state = CompilationState {
         asm: Asm::new(),
         string_constants: HashMap::new(),
         float_constants: HashMap::new(),
         unique_label_id: 0,
         parsed_unit,
-        struct_types: HashMap::new()
+        struct_types: HashMap::new(),
+        errors: Vec::new(),
     };
 
     for struct_declaration in parsed_unit.struct_declarations.iter() {
@@ -326,16 +459,24 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
         let mut size = 0;
 
         for member in struct_declaration.members.iter() {
-            members.push(StructMemberWithOffset { member: member.clone(), offset: size });
+            members.push(StructMemberWithOffset {
+                member: member.clone(),
+                offset: size,
+            });
             let member_size = sizeof(&member.data_type, &compilation_state);
             size = ((size + member_size - 1) / member_size) * member_size + member_size;
         }
 
-        compilation_state.struct_types.insert(struct_declaration.identifier.clone(), StructType { members, size });
+        compilation_state.struct_types.insert(
+            struct_declaration.identifier.clone(),
+            StructType { members, size },
+        );
     }
 
     for function_declaration in parsed_unit.function_declarations.iter() {
-        compilation_state.asm.extern_label(&function_declaration.name);
+        compilation_state
+            .asm
+            .extern_label(&function_declaration.name);
     }
 
     for function in parsed_unit.functions.iter() {
@@ -364,10 +505,14 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
             variables: &mut variables,
             current_function: &function,
             asm: Asm::new(),
-            used_registers: RegMap::new()
+            used_registers: RegMap::new(),
         };
         compile_scope(&mut scope_state, &mut compilation_state);
-        compilation_state.asm.sub(RSP, ((scope_state.max_stack_size + 15) / 16) * 16, Word::QWORD);
+        compilation_state.asm.sub(
+            RSP,
+            ((scope_state.max_stack_size + 15) / 16) * 16,
+            Word::QWORD,
+        );
         compilation_state.asm.append(scope_state.asm);
         /*
         to_append = formatdoc!(".{}.end:
@@ -381,7 +526,9 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
                             ret\n", function.prototype.name); */
         // TODO: When I make the instructions stored in a vector instead of generating assembly
         // directly I might check if the last instruction was a jmp to this label and remove it
-        compilation_state.asm.label(&fmt!(".{}.end", function.prototype.name));
+        compilation_state
+            .asm
+            .label(&fmt!(".{}.end", function.prototype.name));
         // compilation_state.asm.mov(RSP, RBP, Word::QWORD);
         // compilation_state.asm.pop(RBP);
         compilation_state.asm.leave();
@@ -398,14 +545,17 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> String {
         compilation_state.asm.db(text);
     }
 
-    compilation_state.asm.assembly
+    CompiledUnit {
+        asm: compilation_state.asm.assembly,
+        errors: compilation_state.errors,
+    }
 }
 
 fn set_instruction_from_flag(flag: &Flag) -> &str {
     match flag {
         Flag::EQUAL => "sete",
         Flag::LARGER => "setg",
-        Flag::SMALLER => "setl"
+        Flag::SMALLER => "setl",
     }
 }
 
@@ -413,6 +563,6 @@ fn jump_instruction_from_negated_flag(flag: &Flag) -> &str {
     match flag {
         Flag::EQUAL => "jne",
         Flag::LARGER => "jle",
-        Flag::SMALLER => "jge"
+        Flag::SMALLER => "jge",
     }
 }

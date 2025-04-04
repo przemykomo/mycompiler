@@ -1,5 +1,3 @@
-use itertools::WhileSome;
-
 #[derive(Debug)]
 pub enum Token {
     IntLiteral(i32),
@@ -54,10 +52,10 @@ pub enum DataType {
 pub struct TokenizedFile {
     pub tokens: Vec<Token>,
     pub positions: Vec<TokenPos>,
-    pub errors: Vec<TokenError>
+    pub errors: Vec<Error>
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct TokenPos {
     pub pos: usize,
     pub line: usize,
@@ -65,7 +63,7 @@ pub struct TokenPos {
 }
 
 #[derive(Debug)]
-pub struct TokenError {
+pub struct Error {
     pub pos: TokenPos,
     pub msg: String
 }
@@ -81,7 +79,7 @@ fn skip_line<T: Iterator<Item = (usize, char)>>(iter: &mut T, state: &mut Tokeni
 }
 
 fn error<T: Iterator<Item = (usize, char)>>(iter: &mut T, state: &mut TokenizationSate, msg: String, pos: usize) {
-    state.errors.push(TokenError {
+    state.errors.push(Error {
         pos: TokenPos {
             pos,
             line: state.line,
@@ -95,7 +93,7 @@ fn error<T: Iterator<Item = (usize, char)>>(iter: &mut T, state: &mut Tokenizati
 struct TokenizationSate {
     pub tokens: Vec<Token>,
     pub positions: Vec<TokenPos>,
-    pub errors: Vec<TokenError>,
+    pub errors: Vec<Error>,
     pub line: usize,
     pub line_begin_pos: usize
 }
@@ -104,7 +102,7 @@ pub fn tokenize(contents: &str) -> TokenizedFile {
     let mut state: TokenizationSate = TokenizationSate {
         tokens: Vec::<Token>::new(),
         positions: Vec::<TokenPos>::new(),
-        errors: Vec::<TokenError>::new(),
+        errors: Vec::<Error>::new(),
         line: 0,
         line_begin_pos: 0,
     };

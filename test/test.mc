@@ -1,19 +1,9 @@
-struct mystruct {
-    int a,
-    int ^b
-}
-
-void other($mystruct* buf);
+void mytest();
 public int main() {
-    mystruct a = mystructd {
-        a: 5d,
-        b: 3
-    };
+    mytest();
+    char c = 'c';
+    int a = 5;
+    a = c;
 
-    other(&a);
-
-    return $0;
-}
-int myfunc() {
-    return 1;
+    return 0;
 }

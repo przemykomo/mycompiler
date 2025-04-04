@@ -10,3 +10,7 @@ void other(struct mystruct* arg) {
 
     // struct mystruct a = {.a = 5, .b = 3};
 }
+
+void mytest() {
+    printf("hello\n");
+}

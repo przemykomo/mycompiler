@@ -49,6 +49,7 @@ pub enum DataType {
     Struct(String),
 }
 
+#[derive(Debug)]
 pub struct TokenizedFile {
     pub tokens: Vec<Token>,
     pub positions: Vec<TokenPos>,

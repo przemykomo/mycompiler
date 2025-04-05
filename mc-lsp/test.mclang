@@ -1,9 +1,7 @@
 void mytest();
 public int main() {
+    int a = 1;
+    char c = $;
     mytest();
-    char c = 'c';
-    int a = 5;
-    a = c;
-
     return 0;
 }

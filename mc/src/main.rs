@@ -2,14 +2,14 @@ use std::env;
 use std::fs;
 use std::io::Write;
 
-pub mod tokenizer;
+mod tokenizer;
 use itertools::Itertools;
 use tokenizer::*;
 
-pub mod parser;
+mod parser;
 use parser::*;
 
-pub mod compiler;
+mod compiler;
 use compiler::*;
 
 fn main() {

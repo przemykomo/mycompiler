@@ -1,5 +1,5 @@
 [package]
-name = "mycompiler"
+name = "mc"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,3 +7,11 @@ edition = "2021"
 
 [dependencies]
 itertools = "0.11.0"
+
+[lib]
+name = "mc"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mc"
+path = "src/main.rs"

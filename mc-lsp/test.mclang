@@ -1,7 +1,7 @@
 void mytest();
 public int main() {
-    int a = 1;
-    char c = $;
-    mytest();
+    int a = 'g';
+    char c = 'd';
+    mytestsdfg();
     return 0;
 }

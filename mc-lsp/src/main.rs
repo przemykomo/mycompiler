@@ -1,10 +1,12 @@
 // Adapating from the example from the lsp-server repo
 
-use lsp_types::InitializeParams;
 use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification as _,
 };
-use lsp_types::request::{Request as _, ShowMessageRequest};
+use lsp_types::request::{
+    HoverRequest, Request as _, SemanticTokensFullRequest, ShowMessageRequest,
+};
+use lsp_types::{InitializeParams, SemanticTokensDeltaParams, SemanticTokensParams};
 use lsp_types::{MessageType, ShowMessageParams};
 
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, Response};
@@ -33,9 +35,9 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn main_loop(connection: Connection, params: serde_json::Value) -> anyhow::Result<()> {
+fn main_loop(connection: Connection, _params: serde_json::Value) -> anyhow::Result<()> {
     let mut server = ServerState::new();
-    let _params: InitializeParams = serde_json::from_value(params)?;
+    // let params: InitializeParams = serde_json::from_value(params)?;
     for msg in &connection.receiver {
         match msg {
             Message::Request(req) => {
@@ -105,6 +107,21 @@ fn handle_request(server: &mut ServerState, req: Request) -> anyhow::Result<Opti
         //     Err(err @ ExtractError::JsonError { .. }) => panic!("{err:?}"),
         //     Err(ExtractError::MethodMismatch(_)) => unreachable!(),
         // },
+        SemanticTokensFullRequest::METHOD => {
+            match req.extract::<SemanticTokensParams>(SemanticTokensFullRequest::METHOD) {
+                Ok((id, params)) => {
+                    let result = server.get_tokens(params);
+                    let result = serde_json::to_value(result)?;
+                    Some(Response {
+                        id,
+                        result: Some(result),
+                        error: None,
+                    })
+                }
+                Err(err @ ExtractError::JsonError { .. }) => panic!("{err:?}"),
+                Err(ExtractError::MethodMismatch(_)) => unreachable!(),
+            }
+        }
         _ => None,
     })
 }

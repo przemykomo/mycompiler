@@ -2,8 +2,7 @@ use std::collections::HashMap;
 
 use lsp_server::{Message, Notification};
 use lsp_types::{
-    Diagnostic, PublishDiagnosticsParams, Uri,
-    notification::{Notification as _, PublishDiagnostics},
+    notification::{Notification as _, PublishDiagnostics}, Diagnostic, PublishDiagnosticsParams, SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensServerCapabilities, Uri, WorkDoneProgressOptions
 };
 use lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
@@ -44,6 +43,54 @@ impl ServerState {
                     save: None,
                 },
             )),
+            semantic_tokens_provider: Some(
+                SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
+                    work_done_progress_options: WorkDoneProgressOptions {
+                        work_done_progress: None,
+                    },
+                    legend: SemanticTokensLegend {
+                        token_types: vec![
+                            SemanticTokenType::NAMESPACE,
+                            SemanticTokenType::TYPE,
+                            SemanticTokenType::CLASS,
+                            SemanticTokenType::ENUM,
+                            SemanticTokenType::INTERFACE,
+                            SemanticTokenType::STRUCT,
+                            SemanticTokenType::TYPE_PARAMETER,
+                            SemanticTokenType::PARAMETER,
+                            SemanticTokenType::VARIABLE,
+                            SemanticTokenType::PROPERTY,
+                            SemanticTokenType::ENUM_MEMBER,
+                            SemanticTokenType::EVENT,
+                            SemanticTokenType::FUNCTION,
+                            SemanticTokenType::METHOD,
+                            SemanticTokenType::MACRO,
+                            SemanticTokenType::KEYWORD,
+                            SemanticTokenType::MODIFIER,
+                            SemanticTokenType::COMMENT,
+                            SemanticTokenType::STRING,
+                            SemanticTokenType::NUMBER,
+                            SemanticTokenType::REGEXP,
+                            SemanticTokenType::OPERATOR,
+                            SemanticTokenType::DECORATOR,
+                        ],
+                        token_modifiers: vec![
+                            SemanticTokenModifier::DECLARATION,
+                            SemanticTokenModifier::DEFINITION,
+                            SemanticTokenModifier::READONLY,
+                            SemanticTokenModifier::STATIC,
+                            SemanticTokenModifier::DEPRECATED,
+                            SemanticTokenModifier::ABSTRACT,
+                            SemanticTokenModifier::ASYNC,
+                            SemanticTokenModifier::MODIFICATION,
+                            SemanticTokenModifier::DOCUMENTATION,
+                            SemanticTokenModifier::DEFINITION
+                        ]
+                    },
+                    range: None,
+                    full: Some(SemanticTokensFullOptions::Bool(true)),
+                }),
+            ),
             ..Default::default()
         }
     }
@@ -161,6 +208,13 @@ impl ServerState {
             }));
 
         Ok(())
+    }
+
+    pub fn get_tokens(&self, params: lsp_types::SemanticTokensParams) -> SemanticTokens {
+        let data = vec![
+            SemanticToken { delta_line: 1, delta_start: 2, length: 3, token_type: 1, token_modifiers_bitset: 0 }
+        ];
+        SemanticTokens { result_id: None, data }
     }
 }
 

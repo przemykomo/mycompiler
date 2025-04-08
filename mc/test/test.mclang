@@ -1,4 +1,4 @@
-vosdid mytest();
+void mytest();
 public int main() {
     mytest();
     return 0;

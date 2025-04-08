@@ -60,7 +60,7 @@ pub fn compile_statement(
                 };
                 if result.data_type != *data_type {
                     compilation_state.errors.push(Error {
-                        pos: expression.pos,
+                        span: expression.span,
                         msg: format!(
                             "Cannot assign a value of type {:?} to a variable {} of type {:?}.",
                             result.data_type, identifier, data_type
@@ -117,18 +117,18 @@ pub fn compile_statement(
                             let left_result = compile_expression(
                                 state,
                                 compilation_state,
-                                &ExpressionWithPos {
+                                &ExpressionSpanned {
                                     expression: Expression::MemberAccess {
-                                        left: Box::new(ExpressionWithPos {
+                                        left: Box::new(ExpressionSpanned {
                                             expression: Expression::Identifier(identifier.clone()),
-                                            pos: expression.pos,
+                                            span: expression.span,
                                         }),
-                                        right: Box::new(ExpressionWithPos {
+                                        right: Box::new(ExpressionSpanned {
                                             expression: Expression::Identifier(member),
-                                            pos: expression.pos,
+                                            span: expression.span,
                                         }),
                                     },
-                                    pos: expression.pos,
+                                    span: expression.span,
                                 },
                                 None,
                             );
@@ -138,7 +138,7 @@ pub fn compile_statement(
                                     compilation_state,
                                     left_result,
                                     result,
-                                    expression.pos,
+                                    expression.span,
                                 );
                             }
                         }
@@ -202,7 +202,7 @@ pub fn compile_statement(
             };
             if result.data_type != DataType::Boolean {
                 compilation_state.errors.push(Error {
-                    pos: expression.pos,
+                    span: expression.span,
                     msg: "If statement condition has to evaluate to a boolean.".to_string(),
                 });
                 compile_new_scope(state, compilation_state, scope);
@@ -260,7 +260,7 @@ pub fn compile_statement(
 
             if result.data_type != DataType::Boolean {
                 compilation_state.errors.push(Error {
-                    pos: expression.pos,
+                    span: expression.span,
                     msg: "While statement condition has to evaluate to a boolean.".to_string(),
                 });
                 compile_new_scope(state, compilation_state, scope);
@@ -327,7 +327,7 @@ pub fn compile_statement(
 
             if result.data_type != DataType::Boolean {
                 compilation_state.errors.push(Error {
-                    pos: condition_expr.pos,
+                    span: condition_expr.span,
                     msg: "For statement condition has to evaluate to a boolean.".to_string(),
                 });
                 compile_scope(&mut scope_state, compilation_state);

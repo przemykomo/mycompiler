@@ -286,14 +286,14 @@ fn compile_function_call(
 ) -> Option<ExpressionResult> {
     let Some(function) = get_function(compilation_state, &function_call.identifier) else {
         compilation_state.errors.push(Error {
-            pos: function_call.pos,
+            span: function_call.span,
             msg: format!("Cannot find function \"{}\"", function_call.identifier),
         });
         return None;
     };
     if function_call.arguments.len() != function.arguments.len() {
         compilation_state.errors.push(Error {
-            pos: function_call.pos,
+            span: function_call.span,
             msg: format!(
                 "Passed wrong amount of parameters to function \"{}\"",
                 function.name
@@ -332,7 +332,7 @@ fn compile_function_call(
 
             if result.data_type != data_type {
                 compilation_state.errors.push(Error {
-                    pos: argument.pos,
+                    span: argument.span,
                     msg: format!(
                         "Passed argument of a wrong type! Expected: {:?}, got: {:?}",
                         data_type, result.data_type
@@ -391,7 +391,7 @@ fn compile_function_call(
                             .find(|var| var.identifier.eq(identifier))
                         else {
                             compilation_state.errors.push(Error {
-                                pos: function_call.pos,
+                                span: function_call.span,
                                 msg: format!("Undeclared variable: \"{}\"", identifier),
                             });
                             return None;

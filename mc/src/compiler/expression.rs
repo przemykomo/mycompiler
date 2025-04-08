@@ -1,4 +1,4 @@
-use crate::tokenizer::{DataType, TokenPos};
+use crate::tokenizer::{DataType, Span};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -8,7 +8,7 @@ use asmutil::FloatRegister::*;
 pub fn compile_expression(
     state: &mut ScopeState,
     compilation_state: &mut CompilationState,
-    expression: &ExpressionWithPos,
+    expression: &ExpressionSpanned,
     result_hint: Option<Register>,
 ) -> Option<ExpressionResult> {
     match &expression.expression {
@@ -40,7 +40,7 @@ pub fn compile_expression(
                 .find(|var| var.identifier.eq(identifier))
             else {
                 compilation_state.errors.push(Error {
-                    pos: expression.pos,
+                    span: expression.span,
                     msg: format!("Undeclared variable: \"{}\"", identifier),
                 });
                 return None;
@@ -65,7 +65,7 @@ pub fn compile_expression(
                 .find(|var| var.identifier.eq(identifier))
             else {
                 compilation_state.errors.push(Error {
-                    pos: expression.pos,
+                    span: expression.span,
                     msg: format!("Undeclared variable: \"{}\"", identifier),
                 });
                 return None;
@@ -79,7 +79,7 @@ pub fn compile_expression(
                 let result = compile_expression(state, compilation_state, &element, None)?;
                 if result.data_type != DataType::Int {
                     compilation_state.errors.push(Error {
-                        pos: element.pos,
+                        span: element.span,
                         msg: "Array index must be an integer!".to_string(),
                     });
                     return None;
@@ -87,7 +87,7 @@ pub fn compile_expression(
                 todo!("Array subscripts");
             } else {
                 compilation_state.errors.push(Error {
-                    pos: element.pos,
+                    span: element.span,
                     msg: format!("{} is not an array type!", identifier),
                 });
                 return None;
@@ -105,7 +105,7 @@ pub fn compile_expression(
 
             if !left_result.data_type.eq(&right_result.data_type) {
                 compilation_state.errors.push(Error {
-                    pos: expression.pos,
+                    span: expression.span,
                     msg: "Cannot do arithmetic operations on values of different data types!"
                         .to_string(),
                 });
@@ -191,7 +191,7 @@ pub fn compile_expression(
             let left_result = move_to_reg_if_needed(state, left_result);
             if right_result.data_type != left_result.data_type {
                 compilation_state.errors.push(Error {
-                    pos: expression.pos,
+                    span: expression.span,
                     msg: "Cannot compare different data types!".to_string(),
                 });
                 return None;
@@ -251,7 +251,7 @@ pub fn compile_expression(
                 })
             } else {
                 compilation_state.errors.push(Error {
-                    pos: expression.pos,
+                    span: expression.span,
                     msg: "Cannot dereference a non pointer.".to_string(),
                 });
                 return None;
@@ -271,7 +271,7 @@ pub fn compile_expression(
                     .find(|var| var.identifier.eq(&identifier))
                 else {
                     compilation_state.errors.push(Error {
-                        pos: expression.pos,
+                        span: expression.span,
                         msg: format!("Undeclared variable: \"{}\"", identifier),
                     });
                     return None;
@@ -293,7 +293,7 @@ pub fn compile_expression(
                 })
             } else {
                 compilation_state.errors.push(Error {
-                    pos: expression.pos,
+                    span: expression.span,
                     msg: "Canno take an adress of an rvalue.".to_string(),
                 });
                 return None;
@@ -355,7 +355,7 @@ pub fn compile_expression(
         Expression::Assigment { left, right } => {
             let left_result = compile_expression(state, compilation_state, &left, None)?;
             let right_result = compile_expression(state, compilation_state, &right, None)?;
-            compile_assignment(state, compilation_state, left_result, right_result, expression.pos)
+            compile_assignment(state, compilation_state, left_result, right_result, expression.span)
         }
         Expression::MemberAccess { left, right } => {
             let left = compile_expression(state, compilation_state, &left, None)?;
@@ -377,7 +377,7 @@ pub fn compile_expression(
                                 .find(|member| member.member.identifier.eq(right_identifier))
                             else {
                                 compilation_state.errors.push(Error {
-                                    pos: expression.pos,
+                                    span: expression.span,
                                     msg: format!(
                                         "Struct `{}` doesn't contain a member named `{}`.",
                                         left_identifier, right_identifier
@@ -399,14 +399,14 @@ pub fn compile_expression(
                     }
                 } else {
                     compilation_state.errors.push(Error {
-                        pos: expression.pos,
+                        span: expression.span,
                         msg: "Cannot access a member of an rvalue.".to_string(),
                     });
                     return None;
                 }
             } else {
                 compilation_state.errors.push(Error {
-                    pos: expression.pos,
+                    span: expression.span,
                     msg: "Cannot access a member of a non struct variable.".to_string(),
                 });
                 return None;
@@ -431,7 +431,7 @@ pub fn compile_expression(
                     .find(|var| var.identifier.eq(identifier))
                 else {
                     compilation_state.errors.push(Error {
-                        pos: expression.pos,
+                        span: expression.span,
                         msg: format!("Undeclared variable: \"{}\"", identifier),
                     });
                     return None;
@@ -454,7 +454,7 @@ pub fn compile_expression(
                 Some(result)
             } else {
                 compilation_state.errors.push(Error {
-                    pos: expression.pos,
+                    span: expression.span,
                     msg: "Cannot increment an rvalue.".to_string(),
                 });
                 return None;
@@ -479,7 +479,7 @@ pub fn compile_expression(
                     .find(|var| var.identifier.eq(identifier))
                 else {
                     compilation_state.errors.push(Error {
-                        pos: expression.pos,
+                        span: expression.span,
                         msg: format!("Undeclared variable: \"{}\"", identifier),
                     });
                     return None;
@@ -502,7 +502,7 @@ pub fn compile_expression(
                 Some(result)
             } else {
                 compilation_state.errors.push(Error {
-                    pos: expression.pos,
+                    span: expression.span,
                     msg: "Cannot decrement an rvalue.".to_string(),
                 });
                 return None;
@@ -570,13 +570,13 @@ pub fn compile_assignment(
     compilation_state: &mut CompilationState,
     left_result: ExpressionResult,
     right_result: ExpressionResult,
-    pos: TokenPos,
+    pos: Span,
 ) -> Option<ExpressionResult> {
     let right_result = move_to_reg_if_needed(state, right_result);
 
     if right_result.data_type != left_result.data_type {
         compilation_state.errors.push(Error {
-            pos,
+            span: pos,
             msg: format!(
                 "Cannot assign `{:?}` to a variable of type `{:?}`.",
                 right_result.data_type, left_result.data_type
@@ -655,7 +655,7 @@ pub fn compile_assignment(
         Some(right_result)
     } else {
         compilation_state.errors.push(Error {
-            pos,
+            span: pos,
             msg: "Cannot assign to an rvalue.".to_string(),
         });
         None

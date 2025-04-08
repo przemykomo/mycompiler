@@ -22,42 +22,51 @@ fn main() {
     let read_file_path = &args[1];
     let write_file_path = &args[2];
 
-    let contents = fs::read_to_string(read_file_path).expect("Should have been able to read the file.");
+    let contents =
+        fs::read_to_string(read_file_path).expect("Should have been able to read the file.");
     let lines = contents.lines().collect_vec();
 
     let tokens = tokenize(&contents);
-    if !tokens.errors.is_empty() {
-        for error in tokens.errors {
-            println!("Tokenizing error: {}", error.msg);
-            println!("--> {}:{}:{}", read_file_path, error.pos.line + 1, error.pos.column);
-            println!("| {}", lines[error.pos.line]);
-            println!("{:>width$}", "^", width = error.pos.column + 2);
-        }
+    if print_errors(&tokens.errors, &lines, &read_file_path) {
         return;
     }
 
     let parsed_unit = parse(&tokens);
-    if !parsed_unit.errors.is_empty() {
-        for error in parsed_unit.errors {
-            println!("Parsing error: {}", error.msg);
-            println!("--> {}:{}:{}", read_file_path, error.pos.line + 1, error.pos.column);
-            println!("| {}", lines[error.pos.line]);
-            println!("{:>width$}", "^", width = error.pos.column + 2);
-        }
-        return;
-    }
+    print_errors(&parsed_unit.errors, &lines, read_file_path);
 
     let compiled_unit = compile_to_assembly(&parsed_unit);
-    if !compiled_unit.errors.is_empty() {
-        for error in compiled_unit.errors {
-            println!("Compiling error: {}", error.msg);
-            println!("--> {}:{}:{}", read_file_path, error.pos.line, error.pos.column);
-            println!("| {}", lines[error.pos.line]);
-            println!("{:>width$}", "^", width = error.pos.column + 2);
-        }
+    if print_errors(&compiled_unit.errors, &lines, &read_file_path) {
         return;
     }
 
-    let mut file = fs::File::create(write_file_path).expect("Should have been able to open this file for writing");
-    file.write_all(compiled_unit.asm.as_bytes()).expect("Should have been able to write to this file.");
+    let mut file = fs::File::create(write_file_path)
+        .expect("Should have been able to open this file for writing");
+    file.write_all(compiled_unit.asm.as_bytes())
+        .expect("Should have been able to write to this file.");
+}
+
+fn print_errors(errors: &[Error], lines: &Vec<&str>, read_file_path: &str) -> bool {
+    if !errors.is_empty() {
+        for error in errors {
+            println!("Error: {}", error.msg);
+            let line = format!(
+                "--> {}:{}:{}",
+                read_file_path,
+                error.span.line + 1,
+                error.span.column
+            );
+            println!("{}", line);
+            println!("| {}", lines[error.span.line]);
+            print!("{: >width$}", "", width = error.span.column + 2);
+            let end = if error.span.line == error.span.endline {
+                error.span.endcolumn
+            } else {
+                line.len()
+            };
+            println!("{:^>width$}", "", width = end - error.span.column + 1);
+        }
+        true
+    } else {
+        false
+    }
 }

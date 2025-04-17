@@ -1,22 +1,32 @@
-// Adapating from the example from the lsp-server repo
+use std::env;
 
+use lsp_types::SemanticTokensParams;
 use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification as _,
 };
-use lsp_types::request::{
-    HoverRequest, Request as _, SemanticTokensFullRequest, ShowMessageRequest,
-};
-use lsp_types::{InitializeParams, SemanticTokensDeltaParams, SemanticTokensParams};
-use lsp_types::{MessageType, ShowMessageParams};
+use lsp_types::request::{Request as _, SemanticTokensFullRequest};
 
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, Response};
 use server::ServerState;
+use tracing::info;
 
 mod server;
 
 fn main() -> anyhow::Result<()> {
-    eprintln!("mc-lsp booting up");
+    let appender = tracing_appender::rolling::never("/tmp/", "mc-lsp.log");
+    let (non_blocking_appender, _guard) = tracing_appender::non_blocking(appender);
+    tracing_subscriber::fmt()
+        .with_target(false)
+        .with_level(false)
+        .with_thread_names(false)
+        .without_time()
+        .with_ansi(false)
+        .with_writer(non_blocking_appender)
+        .init();
+    unsafe { env::set_var("RUST_BACKTRACE", "1") };
+    std::panic::set_hook(Box::new(tracing_panic::panic_hook));
 
+    info!("mc-lsp booting up");
     let (connection, io_threads) = Connection::stdio();
     let server_capabilities = serde_json::to_value(ServerState::capabilities())?;
     let initialization_params = match connection.initialize(server_capabilities) {
@@ -31,7 +41,7 @@ fn main() -> anyhow::Result<()> {
     main_loop(connection, initialization_params)?;
     io_threads.join()?;
 
-    eprintln!("shutting down server");
+    info!("shutting down server");
     Ok(())
 }
 
@@ -50,18 +60,19 @@ fn main_loop(connection: Connection, _params: serde_json::Value) -> anyhow::Resu
                     }
                     Ok(None) => {}
                     Err(err) => {
-                        let message = ShowMessageParams {
-                            typ: MessageType::ERROR,
-                            message: err.to_string(),
-                        };
-                        let params = serde_json::to_value(&message)?;
-                        let response = Request {
-                            // TODO: super illegal
-                            id: 0.into(),
-                            method: ShowMessageRequest::METHOD.to_string(),
-                            params,
-                        };
-                        connection.sender.send(Message::Request(response))?;
+                        info!("{}", &err);
+                        // let message = ShowMessageParams {
+                        //     typ: MessageType::ERROR,
+                        //     message: err.to_string(),
+                        // };
+                        // let params = serde_json::to_value(&message)?;
+                        // let response = Request {
+                        //     // TODO: super illegal
+                        //     id: 0.into(),
+                        //     method: ShowMessageRequest::METHOD.to_string(),
+                        //     params,
+                        // };
+                        // connection.sender.send(Message::Request(response))?;
                     }
                 }
             }
@@ -112,11 +123,12 @@ fn handle_request(server: &mut ServerState, req: Request) -> anyhow::Result<Opti
                 Ok((id, params)) => {
                     let result = server.get_tokens(params);
                     let result = serde_json::to_value(result)?;
-                    Some(Response {
+                    let response = Response {
                         id,
                         result: Some(result),
                         error: None,
-                    })
+                    };
+                    Some(response)
                 }
                 Err(err @ ExtractError::JsonError { .. }) => panic!("{err:?}"),
                 Err(ExtractError::MethodMismatch(_)) => unreachable!(),

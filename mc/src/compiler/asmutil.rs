@@ -165,7 +165,7 @@ impl Operand for i32 {
 
 impl Operand for &char {
     fn asm_from_size(&self, _word: &Word) -> String {
-        self.to_string()
+        fmt!("'{}'", self)
     }
 }
 

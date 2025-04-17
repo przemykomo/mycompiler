@@ -116,7 +116,7 @@ fn skip_line<T: Iterator<Item = (usize, char)>>(iter: &mut T, state: &mut Tokeni
     }
 }
 
-fn error<T: Iterator<Item = (usize, char)>>(
+fn error_till_newline<T: Iterator<Item = (usize, char)>>(
     iter: &mut T,
     state: &mut TokenizationSate,
     msg: String,
@@ -151,9 +151,10 @@ pub fn tokenize(contents: &str) -> TokenizedFile {
     };
     let mut iter = contents.chars().enumerate().peekable();
     let mut buffer;
-    let mut last_pos = 0;
+    let mut last_pos;
 
     while let Some((pos, mut c)) = iter.next() {
+        last_pos = pos;
         buffer = String::new();
         if c.is_alphabetic() || c == '_' {
             loop {
@@ -194,6 +195,11 @@ pub fn tokenize(contents: &str) -> TokenizedFile {
                 "for" => Token::For,
                 _ => Token::Identifier(buffer),
             };
+            if span.endline < span.line
+                || (span.line == span.endline && span.endcolumn < span.column)
+            {
+                panic!("{:?} {:?}", &token, span);
+            }
             state.tokens.push(TokenSpanned { token, span });
         } else if c.is_ascii_digit() || c == '-' {
             let mut is_float = false;
@@ -227,7 +233,7 @@ pub fn tokenize(contents: &str) -> TokenizedFile {
                         span,
                     });
                 } else {
-                    error(
+                    error_till_newline(
                         &mut iter,
                         &mut state,
                         format!("Cannot parse a float constant: \"{}\"", buffer),
@@ -278,19 +284,23 @@ pub fn tokenize(contents: &str) -> TokenizedFile {
                         break;
                     }
                 } else {
-                    error(
-                        &mut iter,
-                        &mut state,
-                        "Expected second quote for string literal end.".to_string(),
-                        pos,
-                    );
+                    state.errors.push(Error {
+                        span: Span {
+                            line: state.line,
+                            column: pos - state.line_begin_pos,
+                            endline: state.line,
+                            endcolumn: pos - state.line_begin_pos + 1,
+                        },
+                        msg: "Expected a closing quote.".to_string(),
+                    });
+                    break;
                 }
             }
         } else if c == '\'' {
             if let Some((_, c)) = iter.next() {
                 if let Some((last_pos, '\'')) = iter.next() {
                     if !c.is_ascii() {
-                        error(
+                        error_till_newline(
                             &mut iter,
                             &mut state,
                             format!("Character {} isn't an ASCII character.", c),
@@ -308,7 +318,7 @@ pub fn tokenize(contents: &str) -> TokenizedFile {
                         span,
                     });
                 } else {
-                    error(
+                    error_till_newline(
                         &mut iter,
                         &mut state,
                         "Expected a ' at the end of a character literal.".to_string(),
@@ -316,7 +326,7 @@ pub fn tokenize(contents: &str) -> TokenizedFile {
                     );
                 }
             } else {
-                error(
+                error_till_newline(
                     &mut iter,
                     &mut state,
                     "Expected a character after '".to_string(),
@@ -359,10 +369,10 @@ pub fn tokenize(contents: &str) -> TokenizedFile {
                     if c.is_whitespace() {
                         if c == '\n' {
                             state.line += 1;
-                            state.line_begin_pos = pos;
+                            state.line_begin_pos = pos + 1;
                         }
                     } else {
-                        error(
+                        error_till_newline(
                             &mut iter,
                             &mut state,
                             format!("Unexpected character: `{}`", other),

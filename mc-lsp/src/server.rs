@@ -2,13 +2,17 @@ use std::collections::HashMap;
 
 use lsp_server::{Message, Notification};
 use lsp_types::{
-    notification::{Notification as _, PublishDiagnostics}, Diagnostic, PublishDiagnosticsParams, SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensServerCapabilities, Uri, WorkDoneProgressOptions
+    Diagnostic, PublishDiagnosticsParams, SemanticToken, SemanticTokenModifier, SemanticTokenType,
+    SemanticTokens, SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
+    SemanticTokensResult, SemanticTokensServerCapabilities, Uri, WorkDoneProgressOptions,
+    notification::{Notification as _, PublishDiagnostics},
 };
 use lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     HoverProviderCapability, OneOf, Position, Range, ServerCapabilities, TextDocumentItem,
     TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
 };
+use mc::tokenizer::{Token, TokenSpanned};
 use serde::Serialize;
 
 #[derive(Default)]
@@ -18,8 +22,8 @@ pub struct ServerState {
 }
 
 struct DocumentEntry {
-    contents: String, // source: SourceFile,
-                      // parsed: ParsedFile,
+    contents: String,
+    tokens: Vec<TokenSpanned>,
 }
 
 impl ServerState {
@@ -50,29 +54,29 @@ impl ServerState {
                     },
                     legend: SemanticTokensLegend {
                         token_types: vec![
-                            SemanticTokenType::NAMESPACE,
-                            SemanticTokenType::TYPE,
-                            SemanticTokenType::CLASS,
-                            SemanticTokenType::ENUM,
-                            SemanticTokenType::INTERFACE,
-                            SemanticTokenType::STRUCT,
-                            SemanticTokenType::TYPE_PARAMETER,
-                            SemanticTokenType::PARAMETER,
-                            SemanticTokenType::VARIABLE,
-                            SemanticTokenType::PROPERTY,
-                            SemanticTokenType::ENUM_MEMBER,
-                            SemanticTokenType::EVENT,
-                            SemanticTokenType::FUNCTION,
-                            SemanticTokenType::METHOD,
-                            SemanticTokenType::MACRO,
-                            SemanticTokenType::KEYWORD,
-                            SemanticTokenType::MODIFIER,
-                            SemanticTokenType::COMMENT,
-                            SemanticTokenType::STRING,
-                            SemanticTokenType::NUMBER,
-                            SemanticTokenType::REGEXP,
-                            SemanticTokenType::OPERATOR,
-                            SemanticTokenType::DECORATOR,
+                            SemanticTokenType::NAMESPACE,      //0
+                            SemanticTokenType::TYPE,           //1
+                            SemanticTokenType::CLASS,          //2
+                            SemanticTokenType::ENUM,           //3
+                            SemanticTokenType::INTERFACE,      //4
+                            SemanticTokenType::STRUCT,         //5
+                            SemanticTokenType::TYPE_PARAMETER, //6
+                            SemanticTokenType::PARAMETER,      //7
+                            SemanticTokenType::VARIABLE,       //8
+                            SemanticTokenType::PROPERTY,       //9
+                            SemanticTokenType::ENUM_MEMBER,    //10
+                            SemanticTokenType::EVENT,          //11
+                            SemanticTokenType::FUNCTION,       //12
+                            SemanticTokenType::METHOD,         //13
+                            SemanticTokenType::MACRO,          //14
+                            SemanticTokenType::KEYWORD,        //15
+                            SemanticTokenType::MODIFIER,       //16
+                            SemanticTokenType::COMMENT,        //17
+                            SemanticTokenType::STRING,         //18
+                            SemanticTokenType::NUMBER,         //19
+                            SemanticTokenType::REGEXP,         //20
+                            SemanticTokenType::OPERATOR,       //21
+                            SemanticTokenType::DECORATOR,      //22
                         ],
                         token_modifiers: vec![
                             SemanticTokenModifier::DECLARATION,
@@ -84,8 +88,8 @@ impl ServerState {
                             SemanticTokenModifier::ASYNC,
                             SemanticTokenModifier::MODIFICATION,
                             SemanticTokenModifier::DOCUMENTATION,
-                            SemanticTokenModifier::DEFINITION
-                        ]
+                            SemanticTokenModifier::DEFINITION,
+                        ],
                     },
                     range: None,
                     full: Some(SemanticTokensFullOptions::Bool(true)),
@@ -96,7 +100,7 @@ impl ServerState {
     }
 
     pub fn compile_for_errors(&mut self, uri: &Uri) -> anyhow::Result<()> {
-        let Some(document) = self.open_documents.get(uri) else {
+        let Some(document) = self.open_documents.get_mut(uri) else {
             return Ok(());
         };
         let tokens = mc::tokenizer::tokenize(&document.contents);
@@ -116,18 +120,20 @@ impl ServerState {
             }
         };
 
+        document.tokens = tokens.tokens;
+
         let diagnostics: Vec<Diagnostic> = errors.map_or(Vec::new(), |errors| {
             errors
                 .iter()
                 .map(|error| Diagnostic {
                     range: Range {
                         start: Position {
-                            line: error.pos.line as u32,
-                            character: error.pos.column as u32,
+                            line: error.span.line as u32,
+                            character: error.span.column as u32,
                         },
                         end: Position {
-                            line: error.pos.line as u32,
-                            character: error.pos.column as u32 + 1,
+                            line: error.span.endline as u32,
+                            character: error.span.endcolumn as u32 + 1,
                         },
                     },
                     message: error.msg.clone(),
@@ -154,13 +160,17 @@ impl ServerState {
     ) -> anyhow::Result<()> {
         let TextDocumentItem {
             uri,
-            language_id,
+            language_id: _,
             version: _,
             text: contents,
         } = text_document;
-        eprintln!("{language_id}");
-        self.open_documents
-            .insert(uri.clone(), DocumentEntry { contents });
+        self.open_documents.insert(
+            uri.clone(),
+            DocumentEntry {
+                contents,
+                tokens: Vec::new(),
+            },
+        );
         self.compile_for_errors(&uri)?;
         Ok(())
     }
@@ -210,11 +220,79 @@ impl ServerState {
         Ok(())
     }
 
-    pub fn get_tokens(&self, params: lsp_types::SemanticTokensParams) -> SemanticTokens {
-        let data = vec![
-            SemanticToken { delta_line: 1, delta_start: 2, length: 3, token_type: 1, token_modifiers_bitset: 0 }
-        ];
-        SemanticTokens { result_id: None, data }
+    // Change the return type to SemanticTokensResult???
+    pub fn get_tokens(&self, params: lsp_types::SemanticTokensParams) -> SemanticTokensResult {
+        let Some(doc) = self.open_documents.get(&params.text_document.uri) else {
+            return SemanticTokens {
+                ..Default::default()
+            }
+            .into();
+        };
+
+        let mut data = Vec::new();
+        let mut prev_line = 0;
+        let mut prev_column = 0;
+
+        for token in &doc.tokens {
+            let token_type = match &token.token {
+                Token::IntLiteral(_) => 19,
+                Token::CharacterLiteral(_) => 19, //?
+                Token::BoolLiteral(_) => 19,      //?
+                Token::FloatLiteral(_) => 19,
+                Token::Semicolon => 21,           //?
+                Token::DataType(_data_type) => 1, //? change when code is parsed
+                Token::Identifier(_) => 8,        //?
+                Token::EqualSign => 21,
+                Token::CompareEqual => 21,
+                Token::PlusSign => 21,
+                Token::MultiplySign => 21,
+                Token::MinusSign => 21,
+                Token::DivisionSign => 21,
+                Token::ParenthesisOpen => 21,
+                Token::ParenthesisClose => 21,
+                Token::CurlyBracketOpen => 21,
+                Token::CurlyBracketClose => 21,
+                Token::Public => 15,
+                Token::String => 1,
+                Token::StringLiteral(_) => 18,
+                Token::Extern => 15,
+                Token::Ampersand => 21,
+                Token::SquareParenthesisOpen => 21,
+                Token::SquareParenthesisClose => 21,
+                Token::LargerThan => 21,
+                Token::SmallerThan => 21,
+                Token::If => 15,
+                Token::Else => 15,
+                Token::Coma => 21,
+                Token::Colon => 21,
+                Token::Return => 15,
+                Token::Struct => 15,
+                Token::Period => 21,
+                Token::While => 15,
+                Token::For => 15,
+            };
+            let (delta_line, delta_start) = if prev_line == token.span.line as u32 {
+                (0, token.span.column as u32 - prev_column)
+            } else {
+                (token.span.line as u32 - prev_line, token.span.column as u32)
+            };
+            let sem = SemanticToken {
+                delta_line,
+                delta_start,
+                length: (token.span.endcolumn - token.span.column + 1) as u32,
+                token_type,
+                token_modifiers_bitset: 0,
+            };
+            prev_line = token.span.line as u32;
+            prev_column = token.span.column as u32;
+            data.push(sem);
+        }
+
+        SemanticTokens {
+            result_id: None,
+            data,
+        }
+        .into()
     }
 }
 

@@ -16,7 +16,7 @@ fn compile_new_scope(
         variables: state.variables,
         current_function: state.current_function,
         asm: Asm::new(),
-        used_registers: state.used_registers.clone(),
+        used_registers: state.used_registers.clone(), //TODO: I don't think I should clone this
     };
     compile_scope(&mut scope_state, compilation_state);
     (scope_state.max_stack_size, scope_state.asm)
@@ -40,11 +40,7 @@ pub fn compile_statement(
             expression,
             data_type,
         } => {
-            let size = if let DataType::Array { data_type, size } = data_type {
-                sizeof(data_type, compilation_state) * size
-            } else {
-                sizeof(data_type, compilation_state)
-            };
+            let size = sizeof(data_type, compilation_state);
 
             state.stack_size_current = ((state.stack_size_current + size - 1) / size) * size + size;
             state.variables.push(Variable {

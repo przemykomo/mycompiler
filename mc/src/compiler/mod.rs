@@ -210,9 +210,9 @@ fn sizeof(data_type: &DataType, compilation_state: &CompilationState) -> i32 {
         DataType::Float => 4,
         DataType::Char | DataType::Boolean => 1,
         DataType::Array {
-            data_type: _,
-            size: _,
-        } => todo!(),
+            data_type,
+            size,
+        } => sizeof(&data_type, compilation_state) * size,
         DataType::Void => panic!("sizeof(void) is invalid!"),
         DataType::Struct(identifier) => {
             compilation_state

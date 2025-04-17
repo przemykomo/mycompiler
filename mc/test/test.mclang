@@ -1,6 +1,6 @@
 void mytest();
 public int main() {
-    int a = 5;
+    int a = 5 + 2 - (8 * 15) / 3;
     char c = 'd';
     mytest();
     return 0;

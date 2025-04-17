@@ -421,11 +421,7 @@ pub fn parse(tokenized_file: &TokenizedFile) -> ParsedUnit {
                                 let function = FunctionDefinition {
                                     prototype: function_prototype,
                                     public: false,
-                                    body: parse_scope(
-                                        &mut iter,
-                                        &mut parsed_unit.errors,
-                                        
-                                    ),
+                                    body: parse_scope(&mut iter, &mut parsed_unit.errors),
                                 };
                                 parsed_unit.functions.push(function);
                             }
@@ -619,7 +615,6 @@ fn parse_variable_definition_with_data_type(
                         size: *size,
                     },
                     errors,
-                    
                 )
             } else {
                 errors.push(Error {
@@ -638,7 +633,6 @@ fn parse_variable_definition_with_data_type(
                 iter,
                 &DataType::Pointer(Box::new(data_type.clone())),
                 errors,
-                
             )
         }
         _ => parse_variable_definition(iter, data_type, errors),
@@ -655,11 +649,9 @@ pub fn parse_scope(
         match token {
             Token::DataType(data_type) => {
                 iter.next();
-                if let Some(statement) = parse_variable_definition_with_data_type(
-                    data_type,
-                    iter,
-                    errors,
-                ) {
+                if let Some(statement) =
+                    parse_variable_definition_with_data_type(data_type, iter, errors)
+                {
                     ast.push(statement);
                 }
             }
@@ -682,7 +674,6 @@ pub fn parse_scope(
                         &DataType::Struct(struct_name.clone()),
                         iter,
                         errors,
-                        
                     ) {
                         ast.push(statement);
                     }
@@ -851,6 +842,7 @@ fn parse_assigment(
             token: Token::EqualSign,
             span: _,
         }) => {
+            iter.next();
             let right = parse_relational(iter, errors)?;
             left = ExpressionSpanned {
                 span: Span::between(&left.span, &right.span),
@@ -879,6 +871,7 @@ fn parse_relational(
             token: Token::CompareEqual,
             span: _,
         }) => {
+            iter.next();
             let right = parse_addition(iter, errors)?;
             left = ExpressionSpanned {
                 span: Span::between(&left.span, &right.span),
@@ -893,6 +886,7 @@ fn parse_relational(
             token: Token::LargerThan,
             span: _,
         }) => {
+            iter.next();
             let right = parse_addition(iter, errors)?;
             left = ExpressionSpanned {
                 span: Span::between(&left.span, &right.span),
@@ -907,6 +901,7 @@ fn parse_relational(
             token: Token::SmallerThan,
             span: _,
         }) => {
+            iter.next();
             let right = parse_addition(iter, errors)?;
             left = ExpressionSpanned {
                 span: Span::between(&left.span, &right.span),
@@ -934,6 +929,7 @@ fn parse_addition(
     while let Some(TokenSpanned { token, span: _ }) = iter.peek() {
         match token {
             Token::PlusSign => {
+                iter.next();
                 let right = parse_multiplication(iter, errors)?;
                 left = ExpressionSpanned {
                     span: Span::between(&left.span, &right.span),
@@ -945,6 +941,7 @@ fn parse_addition(
                 };
             }
             Token::MinusSign => {
+                iter.next();
                 let right = parse_multiplication(iter, errors)?;
                 left = ExpressionSpanned {
                     span: Span::between(&left.span, &right.span),
@@ -971,6 +968,7 @@ fn parse_multiplication(
     while let Some(TokenSpanned { token, span: _ }) = iter.peek() {
         match token {
             Token::MultiplySign => {
+                iter.next();
                 let right = parse_literals_pointers(iter, errors)?;
                 left = ExpressionSpanned {
                     span: Span::between(&left.span, &right.span),
@@ -982,6 +980,7 @@ fn parse_multiplication(
                 };
             }
             Token::DivisionSign => {
+                iter.next();
                 let right = parse_literals_pointers(iter, errors)?;
                 left = ExpressionSpanned {
                     span: Span::between(&left.span, &right.span),
@@ -1042,22 +1041,20 @@ fn parse_literals_pointers(
                 expression: Expression::StringLiteral(value.clone()),
             })
         }
-        Token::MultiplySign => Some(ExpressionSpanned {
-            span: *span,
-            expression: Expression::Dereference(Box::new(parse_member_access(
-                iter,
-                errors,
-                
-            )?)),
-        }),
-        Token::Ampersand => Some(ExpressionSpanned {
-            span: *span,
-            expression: Expression::AddressOf(Box::new(parse_member_access(
-                iter,
-                errors,
-                
-            )?)),
-        }),
+        Token::MultiplySign => {
+            iter.next();
+            Some(ExpressionSpanned {
+                span: *span,
+                expression: Expression::Dereference(Box::new(parse_member_access(iter, errors)?)),
+            })
+        }
+        Token::Ampersand => {
+            iter.next();
+            Some(ExpressionSpanned {
+                span: *span,
+                expression: Expression::AddressOf(Box::new(parse_member_access(iter, errors)?)),
+            })
+        }
         _ => parse_member_access(iter, errors),
     }
 }
@@ -1129,8 +1126,7 @@ fn parse_atom(
                 },
             )) = iter.next_tuple()
             {
-                let identifier =
-                    parse_identifier(iter, identifier.clone(), errors, span)?;
+                let identifier = parse_identifier(iter, identifier.clone(), errors, span)?;
                 Some(ExpressionSpanned {
                     span: Span::between(span, &identifier.span),
                     expression: Expression::Increment(Box::new(identifier)),
@@ -1158,8 +1154,7 @@ fn parse_atom(
                 },
             )) = iter.next_tuple()
             {
-                let identifier =
-                    parse_identifier(iter, identifier.clone(), errors, span)?;
+                let identifier = parse_identifier(iter, identifier.clone(), errors, span)?;
                 Some(ExpressionSpanned {
                     span: Span::between(span, &identifier.span),
                     expression: Expression::Decrement(Box::new(identifier)),
@@ -1290,10 +1285,7 @@ fn parse_identifier(
                             });
                         }
                     }
-                    members.push((
-                        identifier.clone(),
-                        parse_expression(iter, errors),
-                    ));
+                    members.push((identifier.clone(), parse_expression(iter, errors)));
                     match iter.peek() {
                         Some(TokenSpanned {
                             token: Token::Coma,

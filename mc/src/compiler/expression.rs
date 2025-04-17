@@ -114,13 +114,11 @@ pub fn compile_expression(
 
             match left_result.data_type {
                 DataType::Int => {
-                    let ResultContainer::TempVariable(left_temp) = left_result.result_container
-                    else {
-                        unreachable!()
-                    };
-
-                    match right_result.result_container {
-                        ResultContainer::TempVariable(right_temp) => {
+                    match (left_result.result_container, right_result.result_container) {
+                        (
+                            ResultContainer::TempVariable(left_temp),
+                            ResultContainer::TempVariable(right_temp),
+                        ) => {
                             let TempVariable::Register(right_reg) = right_temp.borrow().clone()
                             else {
                                 unreachable!()
@@ -132,22 +130,82 @@ pub fn compile_expression(
                                 &operator,
                             );
                             state.used_registers.remove(&right_reg);
+
+                            Some(ExpressionResult {
+                                data_type: DataType::Int,
+                                result_container: ResultContainer::TempVariable(left_temp),
+                            })
                         }
-                        ResultContainer::ConstInt(right_const) => {
+                        (
+                            ResultContainer::TempVariable(left_temp),
+                            ResultContainer::ConstInt(right),
+                        ) => {
                             compile_arithmetic_int_expression(
                                 state,
                                 left_temp.clone(),
-                                right_const,
+                                right,
                                 &operator,
                             );
+                            Some(ExpressionResult {
+                                data_type: DataType::Int,
+                                result_container: ResultContainer::TempVariable(left_temp),
+                            })
                         }
-                        _ => unreachable!(),
-                    }
+                        (
+                            ResultContainer::ConstInt(left),
+                            ResultContainer::TempVariable(right_temp),
+                        ) => match operator {
+                            ArithmeticOperator::Add | ArithmeticOperator::Multiply => {
+                                compile_arithmetic_int_expression(
+                                    state,
+                                    right_temp.clone(),
+                                    left,
+                                    &operator,
+                                );
+                                Some(ExpressionResult {
+                                    data_type: DataType::Int,
+                                    result_container: ResultContainer::TempVariable(right_temp),
+                                })
+                            }
+                            ArithmeticOperator::Subtract | ArithmeticOperator::Divide => {
+                                let TempVariable::Register(right_reg) = right_temp.borrow().clone()
+                                else {
+                                    unreachable!()
+                                };
+                                let left_reg =
+                                    force_get_any_free_register(state, &[right_reg], result_hint);
+                                state.asm.mov(left_reg, left, Word::QWORD);
+                                let left_temp =
+                                    Rc::new(RefCell::new(TempVariable::Register(left_reg)));
+                                compile_arithmetic_int_expression(
+                                    state,
+                                    left_temp.clone(),
+                                    right_reg,
+                                    &operator,
+                                );
+                                state.used_registers.insert(left_reg, left_temp.clone());
+                                state.used_registers.remove(&right_reg);
 
-                    Some(ExpressionResult {
-                        data_type: DataType::Int,
-                        result_container: ResultContainer::TempVariable(left_temp),
-                    })
+                                Some(ExpressionResult {
+                                    data_type: DataType::Int,
+                                    result_container: ResultContainer::TempVariable(left_temp),
+                                })
+                            }
+                        },
+                        (ResultContainer::ConstInt(left), ResultContainer::ConstInt(right)) => {
+                            let result = match operator {
+                                ArithmeticOperator::Add => left + right,
+                                ArithmeticOperator::Subtract => left - right,
+                                ArithmeticOperator::Multiply => left * right,
+                                ArithmeticOperator::Divide => left / right,
+                            };
+                            Some(ExpressionResult {
+                                data_type: DataType::Int,
+                                result_container: ResultContainer::ConstInt(result),
+                            })
+                        }
+                        other => unreachable!("{:?}", other),
+                    }
                 }
                 DataType::Float => {
                     match operator {
@@ -285,11 +343,12 @@ pub fn compile_expression(
                     }),
                     Word::QWORD,
                 );
+
+                let temp = Rc::new(RefCell::new(TempVariable::Register(reg)));
+                state.used_registers.insert(reg, temp.clone());
                 Some(ExpressionResult {
                     data_type: DataType::Pointer(Box::new(variable.data_type.clone())),
-                    result_container: ResultContainer::TempVariable(Rc::new(RefCell::new(
-                        TempVariable::Register(reg),
-                    ))),
+                    result_container: ResultContainer::TempVariable(temp),
                 })
             } else {
                 compilation_state.errors.push(Error {
@@ -355,7 +414,13 @@ pub fn compile_expression(
         Expression::Assigment { left, right } => {
             let left_result = compile_expression(state, compilation_state, &left, None)?;
             let right_result = compile_expression(state, compilation_state, &right, None)?;
-            compile_assignment(state, compilation_state, left_result, right_result, expression.span)
+            compile_assignment(
+                state,
+                compilation_state,
+                left_result,
+                right_result,
+                expression.span,
+            )
         }
         Expression::MemberAccess { left, right } => {
             let left = compile_expression(state, compilation_state, &left, None)?;

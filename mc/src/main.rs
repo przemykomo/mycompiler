@@ -49,19 +49,19 @@ fn print_errors(errors: &[Error], lines: &Vec<&str>, read_file_path: &str) -> bo
     if !errors.is_empty() {
         for error in errors {
             println!("Error: {}", error.msg);
-            let line = format!(
+            let line = format!("| {}", lines[error.span.line]);
+            println!(
                 "--> {}:{}:{}",
                 read_file_path,
                 error.span.line + 1,
                 error.span.column
             );
             println!("{}", line);
-            println!("| {}", lines[error.span.line]);
             print!("{: >width$}", "", width = error.span.column + 2);
             let end = if error.span.line == error.span.endline {
                 error.span.endcolumn
             } else {
-                line.len()
+                lines[error.span.line].len()
             };
             println!("{:^>width$}", "", width = end - error.span.column + 1);
         }

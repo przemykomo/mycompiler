@@ -44,9 +44,14 @@ pub fn compile_statement(
 
             state.stack_size_current = ((state.stack_size_current + size - 1) / size) * size + size;
             state.variables.push(Variable {
-                identifier: identifier.clone(),
+                identifier: identifier.identifier.clone(),
                 stack_location: state.stack_size_current,
                 data_type: data_type.clone(),
+            });
+            let variable = state.variables.last().unwrap(); //TODO
+            compilation_state.highlights.push(Highlight {
+                span: identifier.span,
+                kind: HighlightKind::Variable,
             });
 
             if let Some(expression) = expression {
@@ -59,7 +64,7 @@ pub fn compile_statement(
                         span: expression.span,
                         msg: format!(
                             "Cannot assign a value of type {:?} to a variable {} of type {:?}.",
-                            result.data_type, identifier, data_type
+                            result.data_type, identifier.identifier, data_type
                         ),
                     });
                 }
@@ -106,29 +111,36 @@ pub fn compile_statement(
                         offset: _,
                     } => {}
                     ResultContainer::StructLiteral {
-                        identifier: _,
+                        identifier: struct_name,
                         members,
                     } => {
+                        let struct_type = compilation_state
+                            .struct_types
+                            .get(&struct_name)
+                            .expect("Expected struct to exist. Should never happen.").clone();
                         for (member, result) in members {
-                            let left_result = compile_expression(
-                                state,
-                                compilation_state,
-                                &ExpressionSpanned {
-                                    expression: Expression::MemberAccess {
-                                        left: Box::new(ExpressionSpanned {
-                                            expression: Expression::Identifier(identifier.clone()),
-                                            span: expression.span,
-                                        }),
-                                        right: Box::new(ExpressionSpanned {
-                                            expression: Expression::Identifier(member),
-                                            span: expression.span,
-                                        }),
-                                    },
+                            let Some(member) = struct_type
+                                .members
+                                .iter()
+                                .find(|m| m.member.identifier.identifier.eq(&member))
+                            else {
+                                compilation_state.errors.push(Error {
                                     span: expression.span,
+                                    msg: format!(
+                                        "Struct `{}` doesn't contain a member named `{}`.",
+                                        struct_name, member
+                                    ),
+                                });
+                                continue;
+                            };
+                            let left_result = ExpressionResult {
+                                data_type: member.member.data_type.clone(),
+                                result_container: ResultContainer::IdentifierWithOffset {
+                                    identifier: identifier.identifier.clone(),
+                                    offset: member.offset,
                                 },
-                                None,
-                            );
-                            if let (Some(left_result), Some(result)) = (left_result, result) {
+                            };
+                            if let Some(result) = result {
                                 let _ = compile_assignment(
                                     state,
                                     compilation_state,
@@ -172,9 +184,10 @@ pub fn compile_statement(
                 panic!("Trying to return a different data type than in the function declaration!");
             }
 
-            state
-                .asm
-                .jmp(&fmt!(".{}.end", state.current_function.prototype.name));
+            state.asm.jmp(&fmt!(
+                ".{}.end",
+                state.current_function.prototype.name.identifier
+            ));
         }
         Statement::If {
             expression,

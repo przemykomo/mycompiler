@@ -1,5 +1,7 @@
 use std::usize::MAX;
 
+use crate::parser::IdentifierSpanned;
+
 #[derive(Debug)]
 pub enum Token {
     IntLiteral(i32),
@@ -48,7 +50,7 @@ pub enum DataType {
     Boolean,
     Void,
     Float,
-    Struct(String),
+    Struct(IdentifierSpanned),
 }
 
 #[derive(Debug)]
@@ -63,7 +65,7 @@ pub struct TokenSpanned {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Span {
     pub line: usize,
     pub column: usize,

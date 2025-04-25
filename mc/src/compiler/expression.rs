@@ -37,19 +37,23 @@ pub fn compile_expression(
                 .variables
                 .iter()
                 .rev()
-                .find(|var| var.identifier.eq(identifier))
+                .find(|var| var.identifier.eq(&identifier.identifier))
             else {
                 compilation_state.errors.push(Error {
                     span: expression.span,
-                    msg: format!("Undeclared variable: \"{}\"", identifier),
+                    msg: format!("Undeclared variable: \"{}\"", identifier.identifier),
                 });
                 return None;
             };
 
+            compilation_state.highlights.push(Highlight {
+                span: identifier.span,
+                kind: HighlightKind::Variable,
+            });
             Some(ExpressionResult {
                 data_type: variable.data_type.clone(),
                 result_container: ResultContainer::IdentifierWithOffset {
-                    identifier: identifier.clone(),
+                    identifier: identifier.identifier.clone(),
                     offset: 0,
                 },
             })
@@ -62,14 +66,18 @@ pub fn compile_expression(
                 .variables
                 .iter()
                 .rev()
-                .find(|var| var.identifier.eq(identifier))
+                .find(|var| var.identifier.eq(&identifier.identifier))
             else {
                 compilation_state.errors.push(Error {
                     span: expression.span,
-                    msg: format!("Undeclared variable: \"{}\"", identifier),
+                    msg: format!("Undeclared variable: \"{}\"", identifier.identifier),
                 });
                 return None;
             };
+            compilation_state.highlights.push(Highlight {
+                span: identifier.span,
+                kind: HighlightKind::Variable,
+            });
             if let DataType::Array {
                 data_type: _,
                 size: _,
@@ -88,7 +96,7 @@ pub fn compile_expression(
             } else {
                 compilation_state.errors.push(Error {
                     span: element.span,
-                    msg: format!("{} is not an array type!", identifier),
+                    msg: format!("{} is not an array!", identifier.identifier),
                 });
                 return None;
             }
@@ -431,7 +439,7 @@ pub fn compile_expression(
                 {
                     let struct_type = compilation_state
                         .struct_types
-                        .get(&left_identifier)
+                        .get(&left_identifier.identifier)
                         .expect("Expected struct to exist. Should never happen.");
 
                     match &right.expression {
@@ -439,17 +447,23 @@ pub fn compile_expression(
                             let Some(member) = struct_type
                                 .members
                                 .iter()
-                                .find(|member| member.member.identifier.eq(right_identifier))
+                                .find(|member| member.member.identifier.identifier.eq(&right_identifier.identifier))
                             else {
                                 compilation_state.errors.push(Error {
                                     span: expression.span,
                                     msg: format!(
                                         "Struct `{}` doesn't contain a member named `{}`.",
-                                        left_identifier, right_identifier
+                                        left_identifier.identifier, right_identifier.identifier
                                     ),
                                 });
                                 return None;
                             };
+
+                            compilation_state.highlights.push(Highlight {
+                                span: right_identifier.span,
+                                kind: HighlightKind::Property,
+                            });
+
                             Some(ExpressionResult {
                                 data_type: member.member.data_type.clone(),
                                 result_container: ResultContainer::IdentifierWithOffset {
@@ -587,10 +601,15 @@ pub fn compile_expression(
                 ));
             }
 
+            compilation_state.highlights.push(Highlight {
+                span: identifier.span,
+                kind: HighlightKind::Struct,
+            });
+
             Some(ExpressionResult {
                 data_type: DataType::Struct(identifier.clone()),
                 result_container: ResultContainer::StructLiteral {
-                    identifier: identifier.clone(),
+                    identifier: identifier.identifier.clone(),
                     members: results,
                 },
             })

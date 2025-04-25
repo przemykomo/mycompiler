@@ -17,10 +17,10 @@ pub enum Expression {
     FloatLiteral(String),
     StringLiteral(String),
     StructLiteral {
-        identifier: String,
+        identifier: IdentifierSpanned,
         members: Vec<(String, Option<ExpressionSpanned>)>,
     },
-    Identifier(String),
+    Identifier(IdentifierSpanned),
     ArithmeticExpression {
         left: Box<ExpressionSpanned>,
         right: Box<ExpressionSpanned>,
@@ -34,7 +34,7 @@ pub enum Expression {
     Dereference(Box<ExpressionSpanned>),
     AddressOf(Box<ExpressionSpanned>),
     ArraySubscript {
-        identifier: String,
+        identifier: IdentifierSpanned,
         element: Box<ExpressionSpanned>,
     },
     FunctionCall(FunctionCall),
@@ -52,13 +52,13 @@ pub enum Expression {
 
 #[derive(Debug)]
 pub struct StructDeclaration {
-    pub identifier: String,
+    pub identifier: IdentifierSpanned,
     pub members: Vec<StructMember>,
 }
 
 #[derive(Debug, Clone)]
 pub struct StructMember {
-    pub identifier: String,
+    pub identifier: IdentifierSpanned,
     pub data_type: DataType,
 }
 
@@ -75,6 +75,18 @@ pub enum ComparisonOperator {
     CompareEqual,
     CompareLarger,
     CompareSmaller,
+}
+
+#[derive(Debug, Clone)]
+pub struct IdentifierSpanned {
+    pub identifier: String,
+    pub span: Span,
+}
+
+impl PartialEq for IdentifierSpanned {
+    fn eq(&self, other: &Self) -> bool {
+        self.identifier.eq(&other.identifier)
+    }
 }
 
 #[derive(Debug)]
@@ -97,7 +109,7 @@ pub enum Statement {
         scope: Vec<Statement>,
     },
     VariableDefinition {
-        identifier: String,
+        identifier: IdentifierSpanned,
         expression: Option<Box<ExpressionSpanned>>,
         data_type: DataType,
     },
@@ -105,7 +117,7 @@ pub enum Statement {
 
 #[derive(Debug)]
 pub struct FunctionCall {
-    pub identifier: String,
+    pub identifier: IdentifierSpanned,
     pub arguments: Vec<ExpressionSpanned>,
     pub span: Span,
 }
@@ -119,7 +131,7 @@ pub struct FunctionDefinition {
 
 #[derive(Debug, Clone)]
 pub struct FunctionPrototype {
-    pub name: String,
+    pub name: IdentifierSpanned,
     pub return_type: DataType,
     pub arguments: Vec<DataType>,
 }
@@ -196,7 +208,10 @@ pub fn parse_arguments_declaration(
                     token: Token::Identifier(_),
                     span: _,
                 }) => {
-                    arguments.push(DataType::Struct(identifier.clone()));
+                    arguments.push(DataType::Struct(IdentifierSpanned {
+                        identifier: identifier.clone(),
+                        span: *span,
+                    }));
                 }
                 Some(TokenSpanned {
                     token: Token::MultiplySign,
@@ -207,7 +222,10 @@ pub fn parse_arguments_declaration(
                         span: _,
                     }) => {
                         arguments.push(DataType::Pointer(Box::new(DataType::Struct(
-                            identifier.clone(),
+                            IdentifierSpanned {
+                                identifier: identifier.clone(),
+                                span: *span,
+                            },
                         ))));
                     }
                     Some(TokenSpanned { token, span }) => {
@@ -311,7 +329,7 @@ pub fn parse(tokenized_file: &TokenizedFile) -> ParsedUnit {
                 if let Some((
                     TokenSpanned {
                         token: Token::Identifier(identifier),
-                        span: _,
+                        span: identifier_span,
                     },
                     TokenSpanned {
                         token: Token::CurlyBracketOpen,
@@ -327,7 +345,7 @@ pub fn parse(tokenized_file: &TokenizedFile) -> ParsedUnit {
                         },
                         TokenSpanned {
                             token: Token::Identifier(member_name),
-                            span: _,
+                            span: member_span,
                         },
                     )) = iter.clone().next_tuple()
                     {
@@ -335,7 +353,10 @@ pub fn parse(tokenized_file: &TokenizedFile) -> ParsedUnit {
                         iter.next();
 
                         members.push(StructMember {
-                            identifier: member_name.clone(),
+                            identifier: IdentifierSpanned {
+                                identifier: member_name.clone(),
+                                span: *member_span,
+                            },
                             data_type: data_type.clone(),
                         });
                         match iter.next() {
@@ -367,7 +388,10 @@ pub fn parse(tokenized_file: &TokenizedFile) -> ParsedUnit {
                     }
 
                     parsed_unit.struct_declarations.push(StructDeclaration {
-                        identifier: identifier.clone(),
+                        identifier: IdentifierSpanned {
+                            identifier: identifier.clone(),
+                            span: *identifier_span,
+                        },
                         members,
                     })
                 } else {
@@ -381,7 +405,7 @@ pub fn parse(tokenized_file: &TokenizedFile) -> ParsedUnit {
                 if let Some((
                     TokenSpanned {
                         token: Token::Identifier(identifier),
-                        span: _,
+                        span: identifier_span,
                     },
                     TokenSpanned {
                         token: Token::ParenthesisOpen,
@@ -405,7 +429,10 @@ pub fn parse(tokenized_file: &TokenizedFile) -> ParsedUnit {
                     }) = iter.next()
                     {
                         let function_prototype = FunctionPrototype {
-                            name: identifier.clone(),
+                            name: IdentifierSpanned {
+                                identifier: identifier.clone(),
+                                span: *identifier_span,
+                            },
                             return_type: return_type.clone(),
                             arguments,
                         };
@@ -459,7 +486,7 @@ pub fn parse(tokenized_file: &TokenizedFile) -> ParsedUnit {
                     },
                     TokenSpanned {
                         token: Token::Identifier(identifier),
-                        span: _,
+                        span: name_span,
                     },
                     TokenSpanned {
                         token: Token::ParenthesisOpen,
@@ -489,7 +516,10 @@ pub fn parse(tokenized_file: &TokenizedFile) -> ParsedUnit {
                     )) = iter.next_tuple()
                     {
                         let function_prototype = FunctionPrototype {
-                            name: identifier.clone(),
+                            name: IdentifierSpanned {
+                                identifier: identifier.clone(),
+                                span: *name_span,
+                            },
                             return_type: return_type.clone(),
                             arguments,
                         };
@@ -565,7 +595,10 @@ fn parse_variable_definition(
                 }
             }
             Some(Statement::VariableDefinition {
-                identifier: identifier.clone(),
+                identifier: IdentifierSpanned {
+                    identifier: identifier.clone(),
+                    span: *span,
+                },
                 expression: my_expression,
                 data_type: data_type.clone(),
             })
@@ -661,7 +694,7 @@ pub fn parse_scope(
                 if let Some((
                     TokenSpanned {
                         token: Token::Identifier(struct_name),
-                        span: _,
+                        span: name_span,
                     },
                     TokenSpanned {
                         token: Token::Identifier(_identifier),
@@ -671,7 +704,10 @@ pub fn parse_scope(
                 {
                     iter.next();
                     if let Some(statement) = parse_variable_definition_with_data_type(
-                        &DataType::Struct(struct_name.clone()),
+                        &DataType::Struct(IdentifierSpanned {
+                            identifier: struct_name.clone(),
+                            span: *name_span,
+                        }),
                         iter,
                         errors,
                     ) {
@@ -1122,11 +1158,12 @@ fn parse_atom(
                 },
                 TokenSpanned {
                     token: Token::Identifier(identifier),
-                    span: _,
+                    span: identifier_span,
                 },
             )) = iter.next_tuple()
             {
-                let identifier = parse_identifier(iter, identifier.clone(), errors, span)?;
+                let identifier =
+                    parse_identifier(iter, identifier.clone(), errors, &identifier_span)?;
                 Some(ExpressionSpanned {
                     span: Span::between(span, &identifier.span),
                     expression: Expression::Increment(Box::new(identifier)),
@@ -1150,11 +1187,12 @@ fn parse_atom(
                 },
                 TokenSpanned {
                     token: Token::Identifier(identifier),
-                    span: _,
+                    span: identifier_span,
                 },
             )) = iter.next_tuple()
             {
-                let identifier = parse_identifier(iter, identifier.clone(), errors, span)?;
+                let identifier =
+                    parse_identifier(iter, identifier.clone(), errors, &identifier_span)?;
                 Some(ExpressionSpanned {
                     span: Span::between(span, &identifier.span),
                     expression: Expression::Decrement(Box::new(identifier)),
@@ -1188,7 +1226,7 @@ fn parse_identifier(
     iter: &mut Peekable<Iter<TokenSpanned>>,
     identifier: String,
     errors: &mut Vec<Error>,
-    span: &Span,
+    identifier_span: &Span,
 ) -> Option<ExpressionSpanned> {
     match iter.peek() {
         Some(TokenSpanned {
@@ -1210,9 +1248,12 @@ fn parse_identifier(
                 }
             }
             Some(ExpressionSpanned {
-                span: Span::between(span, end),
+                span: Span::between(identifier_span, end),
                 expression: Expression::ArraySubscript {
-                    identifier,
+                    identifier: IdentifierSpanned {
+                        identifier,
+                        span: *identifier_span,
+                    },
                     element: Box::new(expression),
                 },
             })
@@ -1241,7 +1282,10 @@ fn parse_identifier(
                 Some(ExpressionSpanned {
                     span,
                     expression: Expression::FunctionCall(FunctionCall {
-                        identifier,
+                        identifier: IdentifierSpanned {
+                            identifier,
+                            span: *identifier_span,
+                        },
                         arguments,
                         span,
                     }),
@@ -1254,7 +1298,10 @@ fn parse_identifier(
                 Some(ExpressionSpanned {
                     span: *span,
                     expression: Expression::FunctionCall(FunctionCall {
-                        identifier,
+                        identifier: IdentifierSpanned {
+                            identifier,
+                            span: *identifier_span,
+                        },
                         arguments,
                         span: *span,
                     }),
@@ -1265,6 +1312,7 @@ fn parse_identifier(
             token: Token::CurlyBracketOpen,
             span,
         }) => {
+            iter.next();
             let mut members: Vec<(String, Option<ExpressionSpanned>)> = Vec::new();
             'outer: loop {
                 if let Some(TokenSpanned {
@@ -1333,7 +1381,10 @@ fn parse_identifier(
                 Some(ExpressionSpanned {
                     span: Span::between(span, end),
                     expression: Expression::StructLiteral {
-                        identifier,
+                        identifier: IdentifierSpanned {
+                            identifier,
+                            span: *identifier_span,
+                        },
                         members,
                     },
                 })
@@ -1345,15 +1396,21 @@ fn parse_identifier(
                 Some(ExpressionSpanned {
                     span: *span,
                     expression: Expression::StructLiteral {
-                        identifier,
+                        identifier: IdentifierSpanned {
+                            identifier,
+                            span: *identifier_span,
+                        },
                         members,
                     },
                 })
             }
         }
         _ => Some(ExpressionSpanned {
-            span: *span,
-            expression: Expression::Identifier(identifier.clone()),
+            span: *identifier_span,
+            expression: Expression::Identifier(IdentifierSpanned {
+                identifier: identifier.clone(),
+                span: *identifier_span,
+            }),
         }),
     }
 }

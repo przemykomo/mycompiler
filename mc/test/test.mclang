@@ -1,7 +1,17 @@
 void mytest();
+struct grzybex {
+    int a,
+    char b
+}
+
 public int main() {
     int a = 5 + 2 - (8 * 15) / 3;
     char c = 'd';
+    grzybex nubert = grzybex {
+        a: a + 2,
+        b: 'f'
+    };
+
     mytest();
     return 0;
 }

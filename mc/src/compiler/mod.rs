@@ -1,5 +1,6 @@
 use crate::parser::*;
-use crate::tokenizer::{DataType, Error};
+use crate::tokenizer::{DataType, Error, Span};
+use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::iter::Peekable;
@@ -24,6 +25,7 @@ pub struct CompilationState<'a> {
     parsed_unit: &'a ParsedUnit,
     struct_types: HashMap<String, StructType>,
     errors: Vec<Error>,
+    highlights: Vec<Highlight>,
 }
 
 pub struct ScopeState<'a> {
@@ -43,11 +45,13 @@ struct Variable {
     data_type: DataType,
 }
 
+#[derive(Clone)]
 struct StructType {
     members: Vec<StructMemberWithOffset>,
     size: i32,
 }
 
+#[derive(Clone)]
 struct StructMemberWithOffset {
     member: StructMember,
     offset: i32,
@@ -204,20 +208,21 @@ fn free_register(state: &mut ScopeState, target_reg: Register, protected_registe
     *temp.borrow_mut() = TempVariable::Stack(state.stack_size_current);
 }
 
-fn sizeof(data_type: &DataType, compilation_state: &CompilationState) -> i32 {
+fn sizeof(data_type: &DataType, compilation_state: &mut CompilationState) -> i32 {
     match data_type {
         DataType::Int | DataType::Pointer { .. } => 8,
         DataType::Float => 4,
         DataType::Char | DataType::Boolean => 1,
-        DataType::Array {
-            data_type,
-            size,
-        } => sizeof(&data_type, compilation_state) * size,
+        DataType::Array { data_type, size } => sizeof(&data_type, compilation_state) * size,
         DataType::Void => panic!("sizeof(void) is invalid!"),
         DataType::Struct(identifier) => {
+            compilation_state.highlights.push(Highlight {
+                span: identifier.span,
+                kind: HighlightKind::Struct,
+            });
             compilation_state
                 .struct_types
-                .get(identifier)
+                .get(&identifier.identifier)
                 .expect("Struct type \"{}\" is missing!")
                 .size
         }
@@ -266,7 +271,7 @@ fn get_function(
         .parsed_unit
         .functions
         .iter()
-        .find(|f| f.prototype.name.eq(identifier))
+        .find(|f| f.prototype.name.identifier.eq(identifier))
     {
         Some(function.prototype.clone())
     } else {
@@ -274,7 +279,7 @@ fn get_function(
             .parsed_unit
             .function_declarations
             .iter()
-            .find(|f| f.name.eq(identifier))
+            .find(|f| f.name.identifier.eq(identifier))
             .cloned()
     }
 }
@@ -284,19 +289,27 @@ fn compile_function_call(
     state: &mut ScopeState,
     function_call: &FunctionCall,
 ) -> Option<ExpressionResult> {
-    let Some(function) = get_function(compilation_state, &function_call.identifier) else {
+    let Some(function) = get_function(compilation_state, &function_call.identifier.identifier)
+    else {
         compilation_state.errors.push(Error {
             span: function_call.span,
-            msg: format!("Cannot find function \"{}\"", function_call.identifier),
+            msg: format!(
+                "Cannot find function \"{}\"",
+                function_call.identifier.identifier
+            ),
         });
         return None;
     };
+    compilation_state.highlights.push(Highlight {
+        span: function_call.identifier.span,
+        kind: HighlightKind::Function,
+    });
     if function_call.arguments.len() != function.arguments.len() {
         compilation_state.errors.push(Error {
             span: function_call.span,
             msg: format!(
                 "Passed wrong amount of parameters to function \"{}\"",
-                function.name
+                function.name.identifier
             ),
         });
         return None;
@@ -419,7 +432,7 @@ fn compile_function_call(
         free_register(state, SCRATCH_REGS[i], &SCRATCH_REGS);
     }
 
-    state.asm.call(&function_call.identifier);
+    state.asm.call(&function_call.identifier.identifier);
     if is_float(&function.return_type) {
         return Some(ExpressionResult {
             data_type: function.return_type.clone(),
@@ -438,9 +451,27 @@ fn is_float(data_type: &DataType) -> bool {
     data_type.eq(&DataType::Float)
 }
 
+// The compiler generates highlights for identifiers since they need context information to
+// determine the semantic token type in the LSP. Might add more highlights later.
+#[derive(Debug)]
+pub enum HighlightKind {
+    Parameter,
+    Property,
+    Variable,
+    Struct,
+    Function,
+}
+
+#[derive(Debug)]
+pub struct Highlight {
+    pub span: Span,
+    pub kind: HighlightKind,
+}
+
 pub struct CompiledUnit {
     pub asm: String,
     pub errors: Vec<Error>,
+    pub highlighs: Vec<Highlight>,
 }
 
 pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> CompiledUnit {
@@ -452,6 +483,7 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> CompiledUnit {
         parsed_unit,
         struct_types: HashMap::new(),
         errors: Vec::new(),
+        highlights: Vec::new(),
     };
 
     for struct_declaration in parsed_unit.struct_declarations.iter() {
@@ -463,25 +495,40 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> CompiledUnit {
                 member: member.clone(),
                 offset: size,
             });
-            let member_size = sizeof(&member.data_type, &compilation_state);
+            let member_size = sizeof(&member.data_type, &mut compilation_state);
             size = ((size + member_size - 1) / member_size) * member_size + member_size;
         }
 
+        compilation_state.highlights.push(Highlight {
+            span: struct_declaration.identifier.span,
+            kind: HighlightKind::Struct,
+        });
+
         compilation_state.struct_types.insert(
-            struct_declaration.identifier.clone(),
+            struct_declaration.identifier.identifier.clone(),
             StructType { members, size },
         );
     }
 
     for function_declaration in parsed_unit.function_declarations.iter() {
+        compilation_state.highlights.push(Highlight {
+            span: function_declaration.name.span,
+            kind: HighlightKind::Function,
+        });
         compilation_state
             .asm
-            .extern_label(&function_declaration.name);
+            .extern_label(&function_declaration.name.identifier);
     }
 
     for function in parsed_unit.functions.iter() {
+        compilation_state.highlights.push(Highlight {
+            span: function.prototype.name.span,
+            kind: HighlightKind::Function,
+        });
         if function.public {
-            compilation_state.asm.global_label(&function.prototype.name);
+            compilation_state
+                .asm
+                .global_label(&function.prototype.name.identifier);
         }
         //TODO: make compile_scope return information about used registries and only push those.
         //Use scratch registries only if possible.
@@ -494,7 +541,9 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> CompiledUnit {
                                 push r15
                                 push rbp
                                 mov rbp, rsp\n", function.prototype.name);*/
-        compilation_state.asm.label(&function.prototype.name);
+        compilation_state
+            .asm
+            .label(&function.prototype.name.identifier);
         compilation_state.asm.push(RBP);
         compilation_state.asm.mov(RBP, RSP, Word::QWORD);
         let mut variables = Vec::new();
@@ -528,7 +577,7 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> CompiledUnit {
         // directly I might check if the last instruction was a jmp to this label and remove it
         compilation_state
             .asm
-            .label(&fmt!(".{}.end", function.prototype.name));
+            .label(&fmt!(".{}.end", function.prototype.name.identifier));
         // compilation_state.asm.mov(RSP, RBP, Word::QWORD);
         // compilation_state.asm.pop(RBP);
         compilation_state.asm.leave();
@@ -548,6 +597,7 @@ pub fn compile_to_assembly(parsed_unit: &ParsedUnit) -> CompiledUnit {
     CompiledUnit {
         asm: compilation_state.asm.assembly,
         errors: compilation_state.errors,
+        highlighs: compilation_state.highlights,
     }
 }
 

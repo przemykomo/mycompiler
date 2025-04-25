@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{cmp::Ordering, collections::HashMap};
 
 use lsp_server::{Message, Notification};
 use lsp_types::{
@@ -12,8 +12,37 @@ use lsp_types::{
     HoverProviderCapability, OneOf, Position, Range, ServerCapabilities, TextDocumentItem,
     TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
 };
-use mc::tokenizer::{Token, TokenSpanned};
+use mc::{
+    compiler::{CompiledUnit, Highlight, HighlightKind},
+    tokenizer::{Token, TokenSpanned},
+};
 use serde::Serialize;
+
+const TOKEN_TYPES: [SemanticTokenType; 23] = [
+    SemanticTokenType::NAMESPACE,      //0
+    SemanticTokenType::TYPE,           //1
+    SemanticTokenType::CLASS,          //2
+    SemanticTokenType::ENUM,           //3
+    SemanticTokenType::INTERFACE,      //4
+    SemanticTokenType::STRUCT,         //5
+    SemanticTokenType::TYPE_PARAMETER, //6
+    SemanticTokenType::PARAMETER,      //7
+    SemanticTokenType::VARIABLE,       //8
+    SemanticTokenType::PROPERTY,       //9
+    SemanticTokenType::ENUM_MEMBER,    //10
+    SemanticTokenType::EVENT,          //11
+    SemanticTokenType::FUNCTION,       //12
+    SemanticTokenType::METHOD,         //13
+    SemanticTokenType::MACRO,          //14
+    SemanticTokenType::KEYWORD,        //15
+    SemanticTokenType::MODIFIER,       //16
+    SemanticTokenType::COMMENT,        //17
+    SemanticTokenType::STRING,         //18
+    SemanticTokenType::NUMBER,         //19
+    SemanticTokenType::REGEXP,         //20
+    SemanticTokenType::OPERATOR,       //21
+    SemanticTokenType::DECORATOR,      //22
+];
 
 #[derive(Default)]
 pub struct ServerState {
@@ -24,6 +53,7 @@ pub struct ServerState {
 struct DocumentEntry {
     contents: String,
     tokens: Vec<TokenSpanned>,
+    compiled_unit: Option<CompiledUnit>,
 }
 
 impl ServerState {
@@ -53,31 +83,7 @@ impl ServerState {
                         work_done_progress: None,
                     },
                     legend: SemanticTokensLegend {
-                        token_types: vec![
-                            SemanticTokenType::NAMESPACE,      //0
-                            SemanticTokenType::TYPE,           //1
-                            SemanticTokenType::CLASS,          //2
-                            SemanticTokenType::ENUM,           //3
-                            SemanticTokenType::INTERFACE,      //4
-                            SemanticTokenType::STRUCT,         //5
-                            SemanticTokenType::TYPE_PARAMETER, //6
-                            SemanticTokenType::PARAMETER,      //7
-                            SemanticTokenType::VARIABLE,       //8
-                            SemanticTokenType::PROPERTY,       //9
-                            SemanticTokenType::ENUM_MEMBER,    //10
-                            SemanticTokenType::EVENT,          //11
-                            SemanticTokenType::FUNCTION,       //12
-                            SemanticTokenType::METHOD,         //13
-                            SemanticTokenType::MACRO,          //14
-                            SemanticTokenType::KEYWORD,        //15
-                            SemanticTokenType::MODIFIER,       //16
-                            SemanticTokenType::COMMENT,        //17
-                            SemanticTokenType::STRING,         //18
-                            SemanticTokenType::NUMBER,         //19
-                            SemanticTokenType::REGEXP,         //20
-                            SemanticTokenType::OPERATOR,       //21
-                            SemanticTokenType::DECORATOR,      //22
-                        ],
+                        token_types: TOKEN_TYPES.to_vec(),
                         token_modifiers: vec![
                             SemanticTokenModifier::DECLARATION,
                             SemanticTokenModifier::DEFINITION,
@@ -103,17 +109,32 @@ impl ServerState {
         let Some(document) = self.open_documents.get_mut(uri) else {
             return Ok(());
         };
+
         let tokens = mc::tokenizer::tokenize(&document.contents);
         let errors = if !tokens.errors.is_empty() {
             Some(tokens.errors)
         } else {
-            let parsed_unit = mc::parser::parse(&tokens);
-            if !parsed_unit.errors.is_empty() {
-                Some(parsed_unit.errors)
+            let mut parsed_unit = mc::parser::parse(&tokens);
+            let errors = parsed_unit.errors;
+            parsed_unit.errors = Vec::new();
+            if !errors.is_empty() {
+                Some(errors)
             } else {
-                let compiled_unit = mc::compiler::compile_to_assembly(&parsed_unit);
-                if !compiled_unit.errors.is_empty() {
-                    Some(compiled_unit.errors)
+                let mut compiled_unit = mc::compiler::compile_to_assembly(&parsed_unit);
+                let errors = compiled_unit.errors;
+                compiled_unit.errors = Vec::new();
+                compiled_unit.highlighs.sort_by(|a, b| {
+                    if a.span.line < b.span.line
+                        || (a.span.line == b.span.line && a.span.column < b.span.column)
+                    {
+                        Ordering::Less
+                    } else {
+                        Ordering::Greater
+                    }
+                });
+                document.compiled_unit = Some(compiled_unit);
+                if !errors.is_empty() {
+                    Some(errors)
                 } else {
                     None
                 }
@@ -169,6 +190,7 @@ impl ServerState {
             DocumentEntry {
                 contents,
                 tokens: Vec::new(),
+                compiled_unit: None,
             },
         );
         self.compile_for_errors(&uri)?;
@@ -220,7 +242,6 @@ impl ServerState {
         Ok(())
     }
 
-    // Change the return type to SemanticTokensResult???
     pub fn get_tokens(&self, params: lsp_types::SemanticTokensParams) -> SemanticTokensResult {
         let Some(doc) = self.open_documents.get(&params.text_document.uri) else {
             return SemanticTokens {
@@ -233,59 +254,49 @@ impl ServerState {
         let mut prev_line = 0;
         let mut prev_column = 0;
 
-        for token in &doc.tokens {
-            let token_type = match &token.token {
-                Token::IntLiteral(_) => 19,
-                Token::CharacterLiteral(_) => 19, //?
-                Token::BoolLiteral(_) => 19,      //?
-                Token::FloatLiteral(_) => 19,
-                Token::Semicolon => 21,           //?
-                Token::DataType(_data_type) => 1, //? change when code is parsed
-                Token::Identifier(_) => 8,        //?
-                Token::EqualSign => 21,
-                Token::CompareEqual => 21,
-                Token::PlusSign => 21,
-                Token::MultiplySign => 21,
-                Token::MinusSign => 21,
-                Token::DivisionSign => 21,
-                Token::ParenthesisOpen => 21,
-                Token::ParenthesisClose => 21,
-                Token::CurlyBracketOpen => 21,
-                Token::CurlyBracketClose => 21,
-                Token::Public => 15,
-                Token::String => 1,
-                Token::StringLiteral(_) => 18,
-                Token::Extern => 15,
-                Token::Ampersand => 21,
-                Token::SquareParenthesisOpen => 21,
-                Token::SquareParenthesisClose => 21,
-                Token::LargerThan => 21,
-                Token::SmallerThan => 21,
-                Token::If => 15,
-                Token::Else => 15,
-                Token::Coma => 21,
-                Token::Colon => 21,
-                Token::Return => 15,
-                Token::Struct => 15,
-                Token::Period => 21,
-                Token::While => 15,
-                Token::For => 15,
-            };
-            let (delta_line, delta_start) = if prev_line == token.span.line as u32 {
-                (0, token.span.column as u32 - prev_column)
-            } else {
-                (token.span.line as u32 - prev_line, token.span.column as u32)
-            };
-            let sem = SemanticToken {
-                delta_line,
-                delta_start,
-                length: (token.span.endcolumn - token.span.column + 1) as u32,
-                token_type,
-                token_modifiers_bitset: 0,
-            };
-            prev_line = token.span.line as u32;
-            prev_column = token.span.column as u32;
-            data.push(sem);
+        let tokens = &mut doc.tokens.iter();
+
+        let mut highlights = doc
+            .compiled_unit
+            .as_ref()
+            .map_or([].iter(), |u| u.highlighs.iter());
+        let mut token_opt = tokens.next();
+        let mut highlight_opt = highlights.next();
+
+        loop {
+            match (token_opt, highlight_opt) {
+                (None, None) => break,
+                (None, Some(highlight)) => {
+                    add_semantic_token_from_highlight(
+                        &mut data,
+                        &mut prev_line,
+                        &mut prev_column,
+                        highlight,
+                    );
+                    highlight_opt = highlights.next();
+                }
+                (Some(token), None) => {
+                    add_semantic_token(&mut data, &mut prev_line, &mut prev_column, token);
+                    token_opt = tokens.next();
+                }
+                (Some(token), Some(highlight)) => {
+                    if token.span.line < highlight.span.line
+                        || (token.span.line == highlight.span.line
+                            && token.span.column < highlight.span.column)
+                    {
+                        add_semantic_token(&mut data, &mut prev_line, &mut prev_column, token);
+                        token_opt = tokens.next();
+                    } else {
+                        add_semantic_token_from_highlight(
+                            &mut data,
+                            &mut prev_line,
+                            &mut prev_column,
+                            highlight,
+                        );
+                        highlight_opt = highlights.next();
+                    }
+                }
+            }
         }
 
         SemanticTokens {
@@ -294,6 +305,102 @@ impl ServerState {
         }
         .into()
     }
+}
+
+fn add_semantic_token(
+    data: &mut Vec<SemanticToken>,
+    prev_line: &mut u32,
+    prev_column: &mut u32,
+    token: &TokenSpanned,
+) {
+    let token_type = match &token.token {
+        Token::IntLiteral(_) => SemanticTokenType::NUMBER,
+        Token::CharacterLiteral(_) => SemanticTokenType::NUMBER, //?
+        Token::BoolLiteral(_) => SemanticTokenType::NUMBER,
+        Token::FloatLiteral(_) => SemanticTokenType::NUMBER,
+        Token::Semicolon => return,
+        Token::DataType(_) => SemanticTokenType::TYPE,
+        Token::Identifier(_) => return, // Identifiers are highlighted separately
+        Token::EqualSign => return,
+        Token::CompareEqual => SemanticTokenType::OPERATOR,
+        Token::PlusSign => SemanticTokenType::OPERATOR,
+        Token::MultiplySign => SemanticTokenType::OPERATOR,
+        Token::MinusSign => SemanticTokenType::OPERATOR,
+        Token::DivisionSign => SemanticTokenType::OPERATOR,
+        Token::ParenthesisOpen => return,
+        Token::ParenthesisClose => return,
+        Token::CurlyBracketOpen => return,
+        Token::CurlyBracketClose => return,
+        Token::Public => SemanticTokenType::KEYWORD,
+        Token::String => SemanticTokenType::TYPE,
+        Token::StringLiteral(_) => SemanticTokenType::STRING,
+        Token::Extern => SemanticTokenType::KEYWORD,
+        Token::Ampersand => SemanticTokenType::OPERATOR,
+        Token::SquareParenthesisOpen => return,
+        Token::SquareParenthesisClose => return,
+        Token::LargerThan => SemanticTokenType::OPERATOR,
+        Token::SmallerThan => SemanticTokenType::OPERATOR,
+        Token::If => SemanticTokenType::KEYWORD,
+        Token::Else => SemanticTokenType::KEYWORD,
+        Token::Coma => return,
+        Token::Colon => return,
+        Token::Return => SemanticTokenType::KEYWORD,
+        Token::Struct => SemanticTokenType::KEYWORD,
+        Token::Period => return,
+        Token::While => SemanticTokenType::KEYWORD,
+        Token::For => SemanticTokenType::KEYWORD,
+    };
+    let (delta_line, delta_start) = if *prev_line == token.span.line as u32 {
+        (0, token.span.column as u32 - *prev_column)
+    } else {
+        (
+            token.span.line as u32 - *prev_line,
+            token.span.column as u32,
+        )
+    };
+    let sem = SemanticToken {
+        delta_line,
+        delta_start,
+        length: (token.span.endcolumn - token.span.column + 1) as u32,
+        token_type: TOKEN_TYPES.iter().position(|t| *t == token_type).unwrap() as u32,
+        token_modifiers_bitset: 0,
+    };
+    *prev_line = token.span.line as u32;
+    *prev_column = token.span.column as u32;
+    data.push(sem);
+}
+
+fn add_semantic_token_from_highlight(
+    data: &mut Vec<SemanticToken>,
+    prev_line: &mut u32,
+    prev_column: &mut u32,
+    highlight: &Highlight,
+) {
+    let token_type = match highlight.kind {
+        HighlightKind::Parameter => SemanticTokenType::PARAMETER,
+        HighlightKind::Property => SemanticTokenType::PROPERTY,
+        HighlightKind::Variable => SemanticTokenType::VARIABLE,
+        HighlightKind::Struct => SemanticTokenType::STRUCT,
+        HighlightKind::Function => SemanticTokenType::FUNCTION,
+    };
+    let (delta_line, delta_start) = if *prev_line == highlight.span.line as u32 {
+        (0, highlight.span.column as u32 - *prev_column)
+    } else {
+        (
+            highlight.span.line as u32 - *prev_line,
+            highlight.span.column as u32,
+        )
+    };
+    let sem = SemanticToken {
+        delta_line,
+        delta_start,
+        length: (highlight.span.endcolumn - highlight.span.column + 1) as u32,
+        token_type: TOKEN_TYPES.iter().position(|t| *t == token_type).unwrap() as u32,
+        token_modifiers_bitset: 0,
+    };
+    *prev_line = highlight.span.line as u32;
+    *prev_column = highlight.span.column as u32;
+    data.push(sem);
 }
 
 fn position_to_idx(source: &str, position: Position) -> u32 {

@@ -1,7 +1,18 @@
 void mytest();
+struct mystruct {
+    int grzyb,
+    int b
+}
+
 public int main() {
     int a = 1;
     char c = 'd';
+    mystruct d = mystruct {
+        grzyb: 5,
+        b: 10
+    };
+
+    d.grzyb = 28 + a;
     mytest();
     return 0;
 }

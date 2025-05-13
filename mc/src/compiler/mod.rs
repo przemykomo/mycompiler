@@ -1,6 +1,5 @@
 use crate::parser::*;
 use crate::tokenizer::{DataType, Error, Span};
-use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::iter::Peekable;
@@ -210,8 +209,8 @@ fn free_register(state: &mut ScopeState, target_reg: Register, protected_registe
 
 fn sizeof(data_type: &DataType, compilation_state: &mut CompilationState) -> i32 {
     match data_type {
-        DataType::Int | DataType::Pointer { .. } => 8,
-        DataType::Float => 4,
+        DataType::I64 | DataType::Pointer { .. } => 8,
+        DataType::F32 => 4,
         DataType::Char | DataType::Boolean => 1,
         DataType::Array { data_type, size } => sizeof(&data_type, compilation_state) * size,
         DataType::Void => panic!("sizeof(void) is invalid!"),
@@ -231,8 +230,8 @@ fn sizeof(data_type: &DataType, compilation_state: &mut CompilationState) -> i32
 
 pub fn sizeofword(data_type: &DataType) -> Word {
     match data_type {
-        DataType::Int | DataType::Pointer { .. } => Word::QWORD,
-        DataType::Float => Word::DWORD,
+        DataType::I64 | DataType::Pointer { .. } => Word::QWORD,
+        DataType::F32 => Word::DWORD,
         DataType::Char | DataType::Boolean => Word::BYTE,
         DataType::Array { data_type, size: _ } => sizeofword(data_type),
         DataType::Void => panic!("sizeofword(void) is invalid!"),
@@ -448,7 +447,7 @@ fn compile_function_call(
 }
 
 fn is_float(data_type: &DataType) -> bool {
-    data_type.eq(&DataType::Float)
+    data_type.eq(&DataType::F32)
 }
 
 // The compiler generates highlights for identifiers since they need context information to

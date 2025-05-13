@@ -1,13 +1,14 @@
-void mytest();
+fn mytest();
+
 struct grzybex {
-    int a,
-    char b
+    a: i64,
+    b: i64
 }
 
-public int main() {
-    int a = 5 + 2 - (8 * 15) / 3;
-    char c = 'd';
-    grzybex nubert = grzybex {
+public fn main() {
+    let a: i64 = 5 + 2 - (8 * 15) / 3;
+    let c: char = 'd' + 6;
+    let nubert: grzybex = grzybex {
         a: a + 2,
         b: 'f'
     };

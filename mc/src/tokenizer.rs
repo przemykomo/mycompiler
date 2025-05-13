@@ -1,8 +1,8 @@
 use std::usize::MAX;
 
-use crate::parser::IdentifierSpanned;
+use crate::ast::IdentifierSpanned;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Token {
     IntLiteral(i32),
     CharacterLiteral(char),
@@ -39,18 +39,23 @@ pub enum Token {
     Period,
     While,
     For,
+    Fn,
+    Arrow,
+    Let,
+    EOF,
+    Bang,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DataType {
-    Int,
+    I64,
     Char,
     Array { data_type: Box<DataType>, size: i32 },
     Pointer(Box<DataType>),
     Boolean,
     Void,
-    Float,
-    Struct(IdentifierSpanned),
+    F32,
+    Struct(IdentifierSpanned), //TODO: Possibly change it to a Path/Vec<Identifier>
 }
 
 #[derive(Debug)]
@@ -83,14 +88,12 @@ impl Span {
         }
     }
 
-    pub fn eof() -> Span {
-        Span {
-            line: MAX,
-            column: MAX,
-            endline: MAX,
-            endcolumn: MAX,
-        }
-    }
+    pub const EOF: Span = Span {
+        line: MAX,
+        column: MAX,
+        endline: MAX,
+        endcolumn: MAX,
+    };
 
     pub fn between(begin: &Span, end: &Span) -> Span {
         Span {
@@ -179,11 +182,11 @@ pub fn tokenize(contents: &str) -> TokenizedFile {
                 endcolumn: last_pos - state.line_begin_pos,
             };
             let token = match buffer.as_str() {
-                "int" => Token::DataType(DataType::Int),
+                "i64" => Token::DataType(DataType::I64),
                 "char" => Token::DataType(DataType::Char),
                 "void" => Token::DataType(DataType::Void),
                 "bool" => Token::DataType(DataType::Boolean),
-                "float" => Token::DataType(DataType::Float),
+                "f32" => Token::DataType(DataType::F32),
                 "public" => Token::Public,
                 "string" => Token::String,
                 "extern" => Token::Extern,
@@ -195,6 +198,8 @@ pub fn tokenize(contents: &str) -> TokenizedFile {
                 "struct" => Token::Struct,
                 "while" => Token::While,
                 "for" => Token::For,
+                "fn" => Token::Fn,
+                "let" => Token::Let,
                 _ => Token::Identifier(buffer),
             };
             if span.endline < span.line
@@ -255,16 +260,28 @@ pub fn tokenize(contents: &str) -> TokenizedFile {
                         span,
                     });
                 } else if buffer == "-" {
-                    let span = Span {
-                        line: state.line,
-                        column: pos - state.line_begin_pos,
-                        endline: state.line,
-                        endcolumn: last_pos - state.line_begin_pos,
-                    };
-                    state.tokens.push(TokenSpanned {
-                        token: Token::MinusSign,
-                        span,
-                    });
+                    if let Some((_, '>')) = iter.peek() {
+                        iter.next();
+                        state.tokens.push(TokenSpanned {
+                            token: Token::Arrow,
+                            span: Span {
+                                line: state.line,
+                                column: pos - state.line_begin_pos,
+                                endline: state.line,
+                                endcolumn: last_pos - state.line_begin_pos + 1,
+                            },
+                        });
+                    } else {
+                        state.tokens.push(TokenSpanned {
+                            token: Token::MinusSign,
+                            span: Span {
+                                line: state.line,
+                                column: pos - state.line_begin_pos,
+                                endline: state.line,
+                                endcolumn: last_pos - state.line_begin_pos,
+                            },
+                        });
+                    }
                 }
             }
         } else if c == '"' {
@@ -367,6 +384,7 @@ pub fn tokenize(contents: &str) -> TokenizedFile {
                 ',' => Token::Coma,
                 ':' => Token::Colon,
                 '.' => Token::Period,
+                '!' => Token::Bang,
                 other => {
                     if c.is_whitespace() {
                         if c == '\n' {
@@ -387,6 +405,11 @@ pub fn tokenize(contents: &str) -> TokenizedFile {
             state.tokens.push(TokenSpanned { token, span });
         }
     }
+
+    state.tokens.push(TokenSpanned {
+        token: Token::EOF,
+        span: Span::EOF,
+    });
 
     TokenizedFile {
         tokens: state.tokens,

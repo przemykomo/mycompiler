@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::io::Write;
+// use std::io::Write;
 
 mod tokenizer;
 use itertools::Itertools;
@@ -9,8 +9,9 @@ use tokenizer::*;
 mod parser;
 use parser::*;
 
-mod compiler;
-use compiler::*;
+pub mod ast;
+// mod compiler;
+// use compiler::*;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -31,21 +32,28 @@ fn main() {
         return;
     }
 
-    let parsed_unit = parse(&tokens);
-    print_errors(&parsed_unit.errors, &lines, read_file_path);
+    let mut parser = Parser::new(&tokens);
+    parser.parse();
 
-    let compiled_unit = compile_to_assembly(&parsed_unit);
-    if print_errors(&compiled_unit.errors, &lines, &read_file_path) {
-        return;
-    }
+    print_errors(&parser.errors, &lines, read_file_path);
+    dbg!(
+        parser.function_declarations,
+        parser.struct_declarations,
+        parser.functions
+    );
 
-    let mut file = fs::File::create(write_file_path)
-        .expect("Should have been able to open this file for writing");
-    file.write_all(compiled_unit.asm.as_bytes())
-        .expect("Should have been able to write to this file.");
+    // let compiled_unit = compile_to_assembly(&parsed_unit);
+    // if print_errors(&compiled_unit.errors, &lines, &read_file_path) {
+    //     return;
+    // }
+    //
+    // let mut file = fs::File::create(write_file_path)
+    //     .expect("Should have been able to open this file for writing");
+    // file.write_all(compiled_unit.asm.as_bytes())
+    //     .expect("Should have been able to write to this file.");
 }
 
-fn print_errors(errors: &[Error], lines: &Vec<&str>, read_file_path: &str) -> bool {
+fn print_errors(errors: &[Error], lines: &[&str], read_file_path: &str) -> bool {
     if !errors.is_empty() {
         for error in errors {
             println!("Error: {}", error.msg);

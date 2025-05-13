@@ -18,7 +18,7 @@ pub fn compile_expression(
             // let temp = Rc::new(RefCell::new(TempVariable::Register(reg)));
             // state.used_registers.insert(reg, temp.clone());
             Some(ExpressionResult {
-                data_type: DataType::Int,
+                data_type: DataType::I64,
                 result_container: ResultContainer::ConstInt(*value),
             })
         }
@@ -85,7 +85,7 @@ pub fn compile_expression(
             {
                 //let stack_location = variable.stack_location.clone();
                 let result = compile_expression(state, compilation_state, &element, None)?;
-                if result.data_type != DataType::Int {
+                if result.data_type != DataType::I64 {
                     compilation_state.errors.push(Error {
                         span: element.span,
                         msg: "Array index must be an integer!".to_string(),
@@ -121,7 +121,7 @@ pub fn compile_expression(
             }
 
             match left_result.data_type {
-                DataType::Int => {
+                DataType::I64 => {
                     match (left_result.result_container, right_result.result_container) {
                         (
                             ResultContainer::TempVariable(left_temp),
@@ -140,7 +140,7 @@ pub fn compile_expression(
                             state.used_registers.remove(&right_reg);
 
                             Some(ExpressionResult {
-                                data_type: DataType::Int,
+                                data_type: DataType::I64,
                                 result_container: ResultContainer::TempVariable(left_temp),
                             })
                         }
@@ -155,7 +155,7 @@ pub fn compile_expression(
                                 &operator,
                             );
                             Some(ExpressionResult {
-                                data_type: DataType::Int,
+                                data_type: DataType::I64,
                                 result_container: ResultContainer::TempVariable(left_temp),
                             })
                         }
@@ -171,7 +171,7 @@ pub fn compile_expression(
                                     &operator,
                                 );
                                 Some(ExpressionResult {
-                                    data_type: DataType::Int,
+                                    data_type: DataType::I64,
                                     result_container: ResultContainer::TempVariable(right_temp),
                                 })
                             }
@@ -195,7 +195,7 @@ pub fn compile_expression(
                                 state.used_registers.remove(&right_reg);
 
                                 Some(ExpressionResult {
-                                    data_type: DataType::Int,
+                                    data_type: DataType::I64,
                                     result_container: ResultContainer::TempVariable(left_temp),
                                 })
                             }
@@ -208,14 +208,14 @@ pub fn compile_expression(
                                 ArithmeticOperator::Divide => left / right,
                             };
                             Some(ExpressionResult {
-                                data_type: DataType::Int,
+                                data_type: DataType::I64,
                                 result_container: ResultContainer::ConstInt(result),
                             })
                         }
                         other => unreachable!("{:?}", other),
                     }
                 }
-                DataType::Float => {
+                DataType::F32 => {
                     match operator {
                         ArithmeticOperator::Add => {
                             state.asm.pop(RAX);
@@ -239,7 +239,7 @@ pub fn compile_expression(
                         }
                     }
                     Some(ExpressionResult {
-                        data_type: DataType::Float,
+                        data_type: DataType::F32,
                         result_container: ResultContainer::FloatRegister,
                     })
                 }
@@ -415,7 +415,7 @@ pub fn compile_expression(
             }
             state.asm.movss(XMM0, fmt!(".Float{}", id));
             Some(ExpressionResult {
-                data_type: DataType::Float,
+                data_type: DataType::F32,
                 result_container: ResultContainer::FloatRegister,
             })
         }

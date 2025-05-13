@@ -1,1416 +1,462 @@
 use crate::tokenizer::*;
-use itertools::Itertools;
-use std::iter::Peekable;
-use std::slice::Iter;
+use crate::ast::*;
 
-#[derive(Debug)]
-pub struct ExpressionSpanned {
-    pub span: Span,
-    pub expression: Expression,
-}
-
-#[derive(Debug)]
-pub enum Expression {
-    IntLiteral(i32),
-    CharacterLiteral(char),
-    BoolLiteral(bool),
-    FloatLiteral(String),
-    StringLiteral(String),
-    StructLiteral {
-        identifier: IdentifierSpanned,
-        members: Vec<(String, Option<ExpressionSpanned>)>,
-    },
-    Identifier(IdentifierSpanned),
-    ArithmeticExpression {
-        left: Box<ExpressionSpanned>,
-        right: Box<ExpressionSpanned>,
-        operator: ArithmeticOperator,
-    },
-    ComparisonExpression {
-        left: Box<ExpressionSpanned>,
-        right: Box<ExpressionSpanned>,
-        operator: ComparisonOperator,
-    },
-    Dereference(Box<ExpressionSpanned>),
-    AddressOf(Box<ExpressionSpanned>),
-    ArraySubscript {
-        identifier: IdentifierSpanned,
-        element: Box<ExpressionSpanned>,
-    },
-    FunctionCall(FunctionCall),
-    Assigment {
-        left: Box<ExpressionSpanned>,
-        right: Box<ExpressionSpanned>,
-    },
-    MemberAccess {
-        left: Box<ExpressionSpanned>,
-        right: Box<ExpressionSpanned>,
-    },
-    Increment(Box<ExpressionSpanned>),
-    Decrement(Box<ExpressionSpanned>),
-}
-
-#[derive(Debug)]
-pub struct StructDeclaration {
-    pub identifier: IdentifierSpanned,
-    pub members: Vec<StructMember>,
-}
-
-#[derive(Debug, Clone)]
-pub struct StructMember {
-    pub identifier: IdentifierSpanned,
-    pub data_type: DataType,
-}
-
-#[derive(Debug)]
-pub enum ArithmeticOperator {
-    Add,
-    Subtract,
-    Multiply,
-    Divide,
-}
-
-#[derive(Debug)]
-pub enum ComparisonOperator {
-    CompareEqual,
-    CompareLarger,
-    CompareSmaller,
-}
-
-#[derive(Debug, Clone)]
-pub struct IdentifierSpanned {
-    pub identifier: String,
-    pub span: Span,
-}
-
-impl PartialEq for IdentifierSpanned {
-    fn eq(&self, other: &Self) -> bool {
-        self.identifier.eq(&other.identifier)
-    }
-}
-
-#[derive(Debug)]
-pub enum Statement {
-    If {
-        expression: Option<ExpressionSpanned>,
-        scope: Vec<Statement>,
-        else_scope: Option<Vec<Statement>>,
-    },
-    Return(ExpressionSpanned),
-    Expression(ExpressionSpanned),
-    While {
-        expression: Option<ExpressionSpanned>,
-        scope: Vec<Statement>,
-    },
-    For {
-        inital_statement: Box<Statement>,
-        condition_expr: ExpressionSpanned,
-        iteration_expr: ExpressionSpanned,
-        scope: Vec<Statement>,
-    },
-    VariableDefinition {
-        identifier: IdentifierSpanned,
-        expression: Option<Box<ExpressionSpanned>>,
-        data_type: DataType,
-    },
-}
-
-#[derive(Debug)]
-pub struct FunctionCall {
-    pub identifier: IdentifierSpanned,
-    pub arguments: Vec<ExpressionSpanned>,
-    pub span: Span,
-}
-
-#[derive(Debug)]
-pub struct FunctionDefinition {
-    pub prototype: FunctionPrototype,
-    pub public: bool,
-    pub body: Vec<Statement>,
-}
-
-#[derive(Debug, Clone)]
-pub struct FunctionPrototype {
-    pub name: IdentifierSpanned,
-    pub return_type: DataType,
-    pub arguments: Vec<DataType>,
-}
-
-#[derive(Debug)]
-pub struct ParsedUnit {
+pub struct Parser<'a> {
+    tokens: &'a [TokenSpanned],
+    index: usize,
+    token: &'a TokenSpanned,
     pub function_declarations: Vec<FunctionPrototype>,
     pub functions: Vec<FunctionDefinition>,
     pub struct_declarations: Vec<StructDeclaration>,
     pub errors: Vec<Error>,
 }
 
-pub fn parse_arguments_declaration(
-    iter: &mut Peekable<Iter<TokenSpanned>>,
-    errors: &mut Vec<Error>,
-) -> Vec<DataType> {
-    let mut arguments = Vec::<DataType>::new();
-
-    loop {
-        match iter.next() {
-            Some(TokenSpanned {
-                token: Token::DataType(data_type),
-                span,
-            }) => match iter.next() {
-                Some(TokenSpanned {
-                    token: Token::Identifier(_),
-                    span: _,
-                }) => {
-                    arguments.push(data_type.clone());
-                }
-                Some(TokenSpanned {
-                    token: Token::MultiplySign,
-                    span,
-                }) => match iter.next() {
-                    Some(TokenSpanned {
-                        token: Token::Identifier(_),
-                        span: _,
-                    }) => {
-                        arguments.push(DataType::Pointer(Box::new(data_type.clone())));
-                    }
-                    Some(TokenSpanned { token, span }) => {
-                        errors.push(Error {
-                            span: *span,
-                            msg: format!("Unexpected token `{:?}` in the function arguments, expected an indentifier.", token)
-                        });
-                    }
-                    None => {
-                        errors.push(Error {
-                            span: span.max_end(),
-                            msg: "Reached the end of file during parsing function arguments."
-                                .to_string(),
-                        });
-                    }
-                },
-                Some(TokenSpanned { token, span }) => {
-                    errors.push(Error {
-                            span: *span,
-                            msg: format!("Unexpected token `{:?}` in the function arguments, expected an indentifier or `*`.", token)
-                        });
-                }
-                None => {
-                    errors.push(Error {
-                        span: span.max_end(),
-                        msg: "Reached the end of file during parsing function arguments."
-                            .to_string(),
-                    });
-                }
-            },
-            Some(TokenSpanned {
-                token: Token::Identifier(identifier),
-                span,
-            }) => match iter.next() {
-                Some(TokenSpanned {
-                    token: Token::Identifier(_),
-                    span: _,
-                }) => {
-                    arguments.push(DataType::Struct(IdentifierSpanned {
-                        identifier: identifier.clone(),
-                        span: *span,
-                    }));
-                }
-                Some(TokenSpanned {
-                    token: Token::MultiplySign,
-                    span: _,
-                }) => match iter.next() {
-                    Some(TokenSpanned {
-                        token: Token::Identifier(_),
-                        span: _,
-                    }) => {
-                        arguments.push(DataType::Pointer(Box::new(DataType::Struct(
-                            IdentifierSpanned {
-                                identifier: identifier.clone(),
-                                span: *span,
-                            },
-                        ))));
-                    }
-                    Some(TokenSpanned { token, span }) => {
-                        errors.push(Error {
-                            span: *span,
-                            msg: format!("Unexpected token `{:?}` in the function arguments, expected an indentifier.", token)
-                        });
-                    }
-                    None => {
-                        errors.push(Error {
-                            span: span.max_end(),
-                            msg: "Reached the end of file during parsing function arguments."
-                                .to_string(),
-                        });
-                    }
-                },
-                Some(TokenSpanned { token, span }) => {
-                    errors.push(Error {
-                            span: *span,
-                            msg: format!("Unexpected token `{:?}` in the function arguments, expected an indentifier or `*`.", token)
-                        });
-                }
-                None => {
-                    errors.push(Error {
-                        span: span.max_end(),
-                        msg: "Reached the end of file during parsing function arguments."
-                            .to_string(),
-                    });
-                }
-            },
-            Some(TokenSpanned { token, span }) => {
-                errors.push(Error {
-                    span: *span,
-                    msg: format!(
-                        "Unexpected token `{:?}` in the function arguments, expected a data type.",
-                        token
-                    ),
-                });
-            }
-            None => {
-                errors.push(Error {
-                    span: Span::eof(),
-                    msg: "Reached the end of file during parsing function arguments.".to_string(),
-                });
-            }
-        }
-
-        if let Some(TokenSpanned {
-            token: Token::Coma,
-            span: _,
-        }) = iter.peek()
-        {
-            iter.next();
-        } else {
-            break;
+impl Parser<'_> {
+    pub fn new(tokenized_file: &TokenizedFile) -> Parser {
+        Parser {
+            tokens: &tokenized_file.tokens, // must end with an EOF token
+            index: 0,
+            token: &tokenized_file.tokens[0],
+            function_declarations: Vec::new(),
+            functions: Vec::new(),
+            struct_declarations: Vec::new(),
+            errors: Vec::new(),
         }
     }
 
-    return arguments;
-}
+    //TODO: in some other loops I'm not checking for EOF
+    pub fn parse(&mut self) {
+        while self.token.token != Token::EOF {
+            let public = self.eat(&Token::Public);
 
-pub fn parse_arguments_passing(
-    iter: &mut Peekable<Iter<TokenSpanned>>,
-    errors: &mut Vec<Error>,
-) -> Vec<ExpressionSpanned> {
-    let mut arguments = Vec::<ExpressionSpanned>::new();
-
-    loop {
-        if let Some(expression) = parse_expression(iter, errors) {
-            arguments.push(expression);
-        } else {
-            break;
-        }
-
-        if let Some(TokenSpanned {
-            token: Token::Coma,
-            span: _,
-        }) = iter.peek()
-        {
-            iter.next();
-        } else {
-            break;
-        }
-    }
-
-    return arguments;
-}
-
-pub fn parse(tokenized_file: &TokenizedFile) -> ParsedUnit {
-    let mut parsed_unit = ParsedUnit {
-        function_declarations: Vec::new(),
-        functions: Vec::new(),
-        struct_declarations: Vec::new(),
-        errors: Vec::new(),
-    };
-    let mut iter = tokenized_file.tokens.iter().peekable();
-
-    while let Some(TokenSpanned { token, span }) = iter.next() {
-        match token {
-            Token::Struct => {
-                if let Some((
-                    TokenSpanned {
-                        token: Token::Identifier(identifier),
-                        span: identifier_span,
-                    },
-                    TokenSpanned {
-                        token: Token::CurlyBracketOpen,
-                        span: _,
-                    },
-                )) = iter.next_tuple()
-                {
-                    let mut members: Vec<StructMember> = Vec::new();
-                    while let Some((
-                        TokenSpanned {
-                            token: Token::DataType(data_type),
-                            span: _,
-                        },
-                        TokenSpanned {
-                            token: Token::Identifier(member_name),
-                            span: member_span,
-                        },
-                    )) = iter.clone().next_tuple()
-                    {
-                        iter.next();
-                        iter.next();
-
-                        members.push(StructMember {
-                            identifier: IdentifierSpanned {
-                                identifier: member_name.clone(),
-                                span: *member_span,
-                            },
-                            data_type: data_type.clone(),
-                        });
-                        match iter.next() {
-                            Some(TokenSpanned {
-                                token: Token::Coma,
-                                span: _,
-                            }) => {}
-                            Some(TokenSpanned {
-                                token: Token::CurlyBracketClose,
-                                span: _,
-                            }) => {
-                                break;
-                            }
-                            Some(TokenSpanned { token, span }) => {
-                                parsed_unit.errors.push(Error {
-                                    span: *span,
-                                    msg: format!("Unexpected `{:?}`.", token),
-                                });
-                            }
-                            None => {
-                                parsed_unit.errors.push(Error {
-                                    span: span.max_end(),
-                                    msg: format!(
-                                        "Reached the end of file in a middle of struct definition."
-                                    ),
-                                });
-                            }
-                        }
-                    }
-
-                    parsed_unit.struct_declarations.push(StructDeclaration {
-                        identifier: IdentifierSpanned {
-                            identifier: identifier.clone(),
-                            span: *identifier_span,
-                        },
-                        members,
-                    })
-                } else {
-                    parsed_unit.errors.push(Error {
-                        span: *span,
-                        msg: "Expected struct declaration after the struct token!".to_string(),
-                    });
-                }
-            }
-            Token::DataType(return_type) => {
-                if let Some((
-                    TokenSpanned {
-                        token: Token::Identifier(identifier),
-                        span: identifier_span,
-                    },
-                    TokenSpanned {
-                        token: Token::ParenthesisOpen,
-                        span: _,
-                    },
-                )) = iter.next_tuple()
-                {
-                    let arguments = if let Some(TokenSpanned {
-                        token: Token::ParenthesisClose,
-                        span: _,
-                    }) = iter.peek()
-                    {
-                        Vec::new()
-                    } else {
-                        parse_arguments_declaration(&mut iter, &mut parsed_unit.errors)
-                    };
-
-                    if let Some(TokenSpanned {
-                        token: Token::ParenthesisClose,
-                        span: _,
-                    }) = iter.next()
-                    {
-                        let function_prototype = FunctionPrototype {
-                            name: IdentifierSpanned {
-                                identifier: identifier.clone(),
-                                span: *identifier_span,
-                            },
-                            return_type: return_type.clone(),
-                            arguments,
-                        };
-                        match iter.next() {
-                            Some(TokenSpanned {
-                                token: Token::Semicolon,
-                                span: _,
-                            }) => parsed_unit.function_declarations.push(function_prototype),
-                            Some(TokenSpanned {
-                                token: Token::CurlyBracketOpen,
-                                span: _,
-                            }) => {
-                                let function = FunctionDefinition {
-                                    prototype: function_prototype,
-                                    public: false,
-                                    body: parse_scope(&mut iter, &mut parsed_unit.errors),
-                                };
-                                parsed_unit.functions.push(function);
-                            }
-                            Some(TokenSpanned { token, span }) => {
-                                parsed_unit.errors.push(Error {
-                                    span: *span,
-                                    msg: format!("Unexpected `{:?}`. Expected `;` or `{{`.", token),
-                                });
-                            }
-                            None => {
-                                parsed_unit.errors.push(Error {
-                                    span: *span,
-                                    msg: "Expected `;` or `{{`.".to_string(),
-                                });
-                            }
-                        }
-                    } else {
-                        parsed_unit.errors.push(Error {
-                            span: *span,
-                            msg: "Expected `)`.".to_string(),
-                        });
-                    }
-                } else {
-                    parsed_unit.errors.push(Error {
-                        span: *span,
-                        msg: "Expected function prototype.".to_string(),
-                    });
-                }
-            }
-            Token::Public => {
-                if let Some((
-                    TokenSpanned {
-                        token: Token::DataType(return_type),
-                        span: _,
-                    },
-                    TokenSpanned {
-                        token: Token::Identifier(identifier),
-                        span: name_span,
-                    },
-                    TokenSpanned {
-                        token: Token::ParenthesisOpen,
-                        span,
-                    },
-                )) = iter.next_tuple()
-                {
-                    let arguments = if let Some(TokenSpanned {
-                        token: Token::ParenthesisClose,
-                        span: _,
-                    }) = iter.peek()
-                    {
-                        Vec::new()
-                    } else {
-                        parse_arguments_declaration(&mut iter, &mut parsed_unit.errors)
-                    };
-
-                    if let Some((
-                        TokenSpanned {
-                            token: Token::ParenthesisClose,
-                            span: _,
-                        },
-                        TokenSpanned {
-                            token: Token::CurlyBracketOpen,
-                            span: _,
-                        },
-                    )) = iter.next_tuple()
-                    {
-                        let function_prototype = FunctionPrototype {
-                            name: IdentifierSpanned {
-                                identifier: identifier.clone(),
-                                span: *name_span,
-                            },
-                            return_type: return_type.clone(),
-                            arguments,
-                        };
-
-                        let function = FunctionDefinition {
-                            prototype: function_prototype,
-                            public: true,
-                            body: parse_scope(&mut iter, &mut parsed_unit.errors),
-                        };
-                        parsed_unit.functions.push(function);
-                    } else {
-                        parsed_unit.errors.push(Error {
-                            span: *span,
-                            msg: "Expected `)`.".to_string(),
-                        });
-                    }
-                } else {
-                    parsed_unit.errors.push(Error {
-                        span: *span,
-                        msg: "Expected function prototype.".to_string(),
-                    });
-                }
-            }
-            token => {
-                parsed_unit.errors.push(Error {
-                    span: *span,
-                    msg: format!("Unexpected token `{:?}`.", token),
-                });
+            if self.eat(&Token::Fn) {
+                self.parse_fn(public);
+            } else if self.eat(&Token::Struct) {
+                self.parse_struct();
             }
         }
     }
 
-    return parsed_unit;
-}
+    fn next(&mut self) -> &TokenSpanned {
+        self.index += 1;
+        self.token = &self.tokens[self.index];
+        self.token
+    }
 
-fn parse_variable_definition(
-    iter: &mut Peekable<Iter<TokenSpanned>>,
-    data_type: &DataType,
-    errors: &mut Vec<Error>,
-) -> Option<Statement> {
-    match iter.next() {
-        Some(TokenSpanned {
-            token: Token::Identifier(identifier),
-            span,
-        }) => {
-            let my_expression: Option<Box<ExpressionSpanned>>;
-            match iter.next() {
-                Some(TokenSpanned {
-                    token: Token::EqualSign,
-                    span: _,
-                }) => {
-                    my_expression = parse_expression(iter, errors).map(Box::new);
-                }
-                Some(TokenSpanned {
-                    token: Token::Semicolon,
-                    span: _,
-                }) => {
-                    my_expression = None;
-                }
-                Some(TokenSpanned { token, span }) => {
-                    errors.push(Error {
-                        span: *span,
-                        msg: format!("Unexpected token `{:?}`.", token),
-                    });
-                    return None;
-                }
-                None => {
-                    errors.push(Error {
-                        span: span.max_end(),
-                        msg: format!("Reached the end of file. Expected `;` or `=`."),
-                    });
-                    return None;
-                }
-            }
-            Some(Statement::VariableDefinition {
-                identifier: IdentifierSpanned {
-                    identifier: identifier.clone(),
-                    span: *span,
-                },
-                expression: my_expression,
-                data_type: data_type.clone(),
+    fn prev(&mut self) -> &TokenSpanned {
+        &self.tokens[self.index - 1]
+    }
+
+    fn eat(&mut self, token: &Token) -> bool {
+        let present = self.token.token == *token;
+        if present {
+            self.next();
+        }
+        present
+    }
+
+    fn err_expected(&mut self, expected: &str) {
+        let got = &self.token.token;
+        self.errors.push(Error {
+            span: self.token.span,
+            msg: format!("Expected {expected}, instead got {got:?}."),
+        });
+    }
+
+    fn eat_or_err(&mut self, token: &Token) {
+        if !self.eat(token) {
+            self.err_expected(&format!("{token:?}"));
+        }
+    }
+
+    fn parse_ident(&mut self) -> Option<IdentifierSpanned> {
+        if let Token::Identifier(identifier) = &self.token.token {
+            self.next();
+            Some(IdentifierSpanned {
+                identifier: identifier.clone(),
+                span: self.token.span,
             })
-        }
-        Some(TokenSpanned { token, span }) => {
-            errors.push(Error {
-                span: *span,
-                msg: format!("Unexpected token `{:?}`.", token),
-            });
-            None
-        }
-        None => {
-            errors.push(Error {
-                span: Span::eof(),
-                msg: format!("Reached the end of file. Expected an identifier."),
-            });
+        } else {
             None
         }
     }
-}
 
-fn parse_variable_definition_with_data_type(
-    data_type: &DataType,
-    iter: &mut Peekable<Iter<TokenSpanned>>,
-    errors: &mut Vec<Error>,
-) -> Option<Statement> {
-    match iter.peek() {
-        Some(TokenSpanned {
-            token: Token::SquareParenthesisOpen,
-            span,
-        }) => {
-            if let Some((
-                TokenSpanned {
-                    token: Token::IntLiteral(size),
-                    span: _,
-                },
-                TokenSpanned {
-                    token: Token::SquareParenthesisClose,
-                    span: _,
-                },
-            )) = iter.next_tuple()
-            {
-                parse_variable_definition(
-                    iter,
-                    &DataType::Array {
-                        data_type: Box::new(data_type.clone()),
-                        size: *size,
-                    },
-                    errors,
-                )
-            } else {
-                errors.push(Error {
-                    span: *span,
-                    msg: "Expected an int literal in an array definition!".to_string(),
-                });
+    fn parse_ident_or_err(&mut self) -> Option<IdentifierSpanned> {
+        let ident = self.parse_ident();
+        if ident.is_none() {
+            self.err_expected("an identifier");
+        }
+        ident
+    }
+
+    fn parse_type(&mut self) -> Option<DataType> {
+        match &self.token.token {
+            Token::DataType(data_type) => {
+                self.next();
+                Some(data_type.clone())
+            },
+            Token::Identifier(identifier) => {
+                self.next();
+                Some(DataType::Struct(IdentifierSpanned {
+                            identifier: identifier.clone(),
+                            span: self.token.span,
+                        }))
+            },
+            _ => {
+                self.err_expected("a type");
                 None
             }
         }
-        Some(TokenSpanned {
-            token: Token::MultiplySign,
-            span: _,
-        }) => {
-            iter.next();
-            parse_variable_definition(
-                iter,
-                &DataType::Pointer(Box::new(data_type.clone())),
-                errors,
-            )
-        }
-        _ => parse_variable_definition(iter, data_type, errors),
     }
-}
 
-pub fn parse_scope(
-    iter: &mut Peekable<Iter<TokenSpanned>>,
-    errors: &mut Vec<Error>,
-) -> Vec<Statement> {
-    let mut ast = Vec::<Statement>::new();
+    /// Parses coma separated definitions until `end`.
+    /// `f` must consume everything between `:` and `,`.
+    fn parse_definitions<T: FnMut(Option<IdentifierSpanned>, &mut Self)>(
+        &mut self,
+        end: &Token,
+        mut f: T,
+    ) {
+        let mut first = true;
 
-    while let Some(TokenSpanned { token, span }) = iter.peek() {
-        match token {
-            Token::DataType(data_type) => {
-                iter.next();
-                if let Some(statement) =
-                    parse_variable_definition_with_data_type(data_type, iter, errors)
-                {
-                    ast.push(statement);
+        while !self.eat(end) {
+            if first {
+                first = false;
+            } else {
+                self.eat_or_err(&Token::Coma);
+            }
+            let ident = self.parse_ident_or_err();
+            self.eat_or_err(&Token::Colon);
+            f(ident, self);
+        }
+    }
+
+    /// Expects that `fn` was already consumed.
+    fn parse_fn(&mut self, public: bool) {
+        let name = self.parse_ident_or_err();
+        self.eat_or_err(&Token::ParenthesisOpen);
+        let mut arguments: Vec<DataType> = Vec::new();
+        self.parse_definitions(&Token::ParenthesisClose, |_ident, this| {
+            if let Some(data_type) = this.parse_type() {
+                arguments.push(data_type);
+            }
+        });
+
+        let return_type = if self.eat(&Token::Arrow) {
+            self.parse_type().unwrap_or(DataType::Void)
+        } else {
+            DataType::Void
+        };
+
+        if self.eat(&Token::Semicolon) {
+            if let Some(name) = name {
+                self.function_declarations.push(FunctionPrototype {
+                    name,
+                    return_type,
+                    arguments,
+                });
+            }
+        } else if self.eat(&Token::CurlyBracketOpen) {
+            let body = self.parse_scope();
+            if let Some(name) = name {
+                self.functions.push(FunctionDefinition {
+                    prototype: FunctionPrototype {
+                        name,
+                        return_type,
+                        arguments,
+                    },
+                    public,
+                    body,
+                });
+            }
+        }
+    }
+
+    // Expects that `struct` was already consumed.
+    fn parse_struct(&mut self) {
+        let ident = self.parse_ident_or_err();
+        self.eat_or_err(&Token::CurlyBracketOpen);
+        let mut members: Vec<StructMember> = Vec::new();
+
+        self.parse_definitions(&Token::CurlyBracketClose, |ident, this| {
+            if let Some(data_type) = this.parse_type() {
+                if let Some(identifier) = ident {
+                    members.push(StructMember {
+                        identifier,
+                        data_type,
+                    });
                 }
             }
-            Token::Identifier(_struct_name) => {
-                // let (i, _) = iter.next().unwrap();
-                let mut iter_clone = iter.clone();
-                if let Some((
-                    TokenSpanned {
-                        token: Token::Identifier(struct_name),
-                        span: name_span,
-                    },
-                    TokenSpanned {
-                        token: Token::Identifier(_identifier),
-                        span: _,
-                    },
-                )) = iter_clone.next_tuple()
-                {
-                    iter.next();
-                    if let Some(statement) = parse_variable_definition_with_data_type(
-                        &DataType::Struct(IdentifierSpanned {
-                            identifier: struct_name.clone(),
-                            span: *name_span,
-                        }),
-                        iter,
-                        errors,
-                    ) {
-                        ast.push(statement);
-                    }
-                } else {
-                    if let Some(expression) = parse_expression(iter, errors) {
-                        ast.push(Statement::Expression(expression));
-                    }
-                }
+        });
+
+        if let Some(identifier) = ident {
+            self.struct_declarations.push(StructDeclaration {
+                identifier,
+                members,
+            });
+        }
+    }
+
+    // Expects that `{` was already consumed. Consumes '}'.
+    fn parse_scope(&mut self) -> Vec<Statement> {
+        let mut statements: Vec<Statement> = Vec::new();
+        while !self.eat(&Token::CurlyBracketClose) {
+            statements.extend(self.parse_statement());
+        }
+        statements
+    }
+
+    fn parse_statement(&mut self) -> Option<Statement> {
+        if self.eat(&Token::Let) {
+            let ident = self.parse_ident_or_err();
+            self.eat_or_err(&Token::Colon);
+            let data_type = self.parse_type();
+
+            let expr = if self.eat(&Token::EqualSign) {
+                let expr = self.parse_expression(0);
+                expr
+            } else {
+                None
+            };
+            self.eat_or_err(&Token::Semicolon);
+            Some(Statement::VariableDefinition {
+                identifier: ident?,
+                expression: expr.map(Box::new),
+                data_type: data_type?,
+            })
+        } else if self.eat(&Token::If) {
+            let expression = self.parse_expression(0);
+            self.eat_or_err(&Token::CurlyBracketOpen);
+            let scope = self.parse_scope();
+            let else_scope = if self.eat(&Token::Else) {
+                self.eat_or_err(&Token::CurlyBracketOpen);
+                Some(self.parse_scope())
+            } else {
+                None
+            };
+
+            Some(Statement::If {
+                expression,
+                scope,
+                else_scope,
+            })
+        } else if self.eat(&Token::While) {
+            let expression = self.parse_expression(0);
+            self.eat_or_err(&Token::CurlyBracketOpen);
+            let scope = self.parse_scope();
+            Some(Statement::While { expression, scope })
+        } else if self.eat(&Token::For) {
+            todo!();
+        } else if self.eat(&Token::Return) {
+            let expression = self.parse_expression(0);
+            self.eat_or_err(&Token::Semicolon);
+            Some(Statement::Return(expression?))
+        } else {
+            let expression = self.parse_expression(0);
+            self.eat_or_err(&Token::Semicolon);
+            Some(Statement::Expression(expression?))
+        }
+    }
+
+    fn parse_expression(&mut self, min_bp: u8) -> Option<ExpressionSpanned> {
+        let unary_op = self.parse_unary_operator();
+        let mut lhs = self.parse_literals_or_member_access()?;
+        if let Some((operator, span)) = unary_op {
+            lhs = ExpressionSpanned {
+                span: Span::between(&span, &lhs.span),
+                expression: Expression::Unary {
+                    exp: Box::new(lhs),
+                    operator,
+                },
             }
-            Token::If => {
-                if let Some(TokenSpanned {
-                    token: Token::ParenthesisOpen,
-                    span,
-                }) = iter.next()
-                {
-                    let expression = parse_expression(iter, errors);
-                    if let Some((
-                        TokenSpanned {
-                            token: Token::ParenthesisClose,
-                            span: _,
-                        },
-                        TokenSpanned {
-                            token: Token::CurlyBracketOpen,
-                            span: _,
-                        },
-                    )) = iter.next_tuple()
-                    {
-                        let scope = parse_scope(iter, errors);
-                        let else_scope = if let Some(TokenSpanned {
-                            token: Token::Else,
-                            span,
-                        }) = iter.peek()
-                        {
-                            if let Some(TokenSpanned {
-                                token: Token::CurlyBracketOpen,
-                                span: _,
-                            }) = iter.next()
-                            {
-                                Some(parse_scope(iter, errors))
-                            } else {
-                                errors.push(Error {
-                                    span: *span,
-                                    msg: "Expected `{` after the else statement.".to_string(),
-                                });
-                                None
-                            }
+        }
+
+        while let Some(operator) = self.parse_binary_operator() {
+            let (l_bp, r_bp) = operator.binding_power();
+            if l_bp < min_bp {
+                break;
+            }
+            self.next();
+
+            let Some(rhs) = self.parse_expression(r_bp) else {
+                self.err_expected("an expression");
+                return Some(lhs);
+            };
+
+            lhs = ExpressionSpanned {
+                span: Span::between(&lhs.span, &rhs.span),
+                expression: Expression::Binary {
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                    operator,
+                },
+            };
+        }
+
+        Some(lhs)
+    }
+
+    fn parse_literals_or_member_access(&mut self) -> Option<ExpressionSpanned> {
+        let expression = match &self.token.token {
+            Token::IntLiteral(val) => Some(Expression::IntLiteral(*val)),
+            Token::CharacterLiteral(val) => Some(Expression::CharacterLiteral(*val)),
+            Token::BoolLiteral(val) => Some(Expression::BoolLiteral(*val)),
+            Token::FloatLiteral(val) => Some(Expression::FloatLiteral(val.clone())),
+            Token::StringLiteral(val) => Some(Expression::StringLiteral(val.clone())),
+            _ => None,
+        };
+
+        if let Some(expression) = expression {
+            let span = self.token.span;
+            self.next();
+            Some(ExpressionSpanned { span, expression })
+        } else {
+            self.parse_member_access()
+        }
+    }
+
+    fn parse_member_access(&mut self) -> Option<ExpressionSpanned> {
+        let mut lhs = self.parse_expression_atom()?;
+
+        while self.eat(&Token::Period) {
+            let rhs = self.parse_expression_atom()?;
+            lhs = ExpressionSpanned {
+                span: Span::between(&lhs.span, &rhs.span),
+                expression: Expression::Binary {
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                    operator: BinaryOperator::MemberAccess,
+                },
+            }
+        }
+
+        Some(lhs)
+    }
+
+    fn parse_expression_atom(&mut self) -> Option<ExpressionSpanned> {
+        let span = self.token.span;
+        match &self.token.token {
+            Token::Identifier(ident) => {
+                self.next();
+                match self.token.token {
+                    Token::SquareParenthesisOpen => {
+                        self.next();
+                        let expr = self.parse_expression(0);
+                        self.eat_or_err(&Token::SquareParenthesisClose);
+                        if let Some(expr) = expr {
+                            Some(ExpressionSpanned {
+                                span: Span::between(&span, &expr.span),
+                                expression: Expression::ArraySubscript {
+                                    identifier: IdentifierSpanned {
+                                        identifier: ident.clone(),
+                                        span,
+                                    },
+                                    element: Box::new(expr),
+                                },
+                            })
                         } else {
                             None
-                        };
-                        ast.push(Statement::If {
-                            expression,
-                            scope,
-                            else_scope,
-                        });
-                    } else {
-                        errors.push(Error {
-                            span: *span,
-                            msg: "Expected `) {` after the if condiction.".to_string(),
-                        });
-                    }
-                } else {
-                    errors.push(Error {
-                        span: *span,
-                        msg: "Expected `(` after the if token.".to_string(),
-                    });
-                }
-            }
-            Token::While => {
-                if let Some(TokenSpanned {
-                    token: Token::ParenthesisOpen,
-                    span,
-                }) = iter.next()
-                {
-                    let expression = parse_expression(iter, errors);
-                    if let Some((
-                        TokenSpanned {
-                            token: Token::ParenthesisClose,
-                            span: _,
-                        },
-                        TokenSpanned {
-                            token: Token::CurlyBracketOpen,
-                            span: _,
-                        },
-                    )) = iter.next_tuple()
-                    {
-                        let scope = parse_scope(iter, errors);
-                        ast.push(Statement::While { expression, scope });
-                    } else {
-                        errors.push(Error {
-                            span: *span,
-                            msg: "Expected `) {` after the while condiction.".to_string(),
-                        });
-                    }
-                } else {
-                    errors.push(Error {
-                        span: *span,
-                        msg: "Expected `(` after the while token.".to_string(),
-                    });
-                }
-            }
-            Token::For => {
-                iter.next();
-                if let Some(TokenSpanned {
-                    token: Token::ParenthesisOpen,
-                    span: _,
-                }) = iter.next()
-                {
-                    todo!();
-                    //let initial_expr = parse_(iter);
-                    // let Some(Token::Semicolon) = iter.next() else { panic!("Expected semicolon!") };
-                    // let condition_expr = parse_expression(iter);
-                    // let Some(Token::Semicolon) = iter.next() else { panic!("Expected semicolon!") };
-                    // let iteration_expr = parse_expression(iter);
-                    // let Some(Token::Semicolon) = iter.next() else { panic!("Expected semicolon!") };
-                    // if let Some((Token::ParenthesisClose, Token::CurlyBracketOpen)) = iter.next_tuple() {
-                    // let scope = parse_scope(iter);
-                    //abstract_syntax_tree.push(Statement::For { initial_expr, condition_expr, iteration_expr, scope });
-                    // } else {
-                    //     panic!("Expected closed parenthesis and opened curly brackets in the for statement!");
-                    // }
-                }
-            }
-            Token::CurlyBracketClose => {
-                iter.next();
-                return ast;
-            }
-            Token::Return => {
-                iter.next();
-                if let Some(expression) = parse_expression(iter, errors) {
-                    ast.push(Statement::Return(expression));
-                }
-            }
-            Token::Semicolon => {
-                iter.next();
-            }
-            _ => {
-                if let Some(expression) = parse_expression(iter, errors) {
-                    ast.push(Statement::Expression(expression));
-                }
-            }
-        }
-    }
-
-    errors.push(Error {
-        span: Span::eof(),
-        msg: "Expected `}`.".to_string(),
-    });
-    ast
-}
-
-fn parse_expression(
-    iter: &mut Peekable<Iter<TokenSpanned>>,
-    errors: &mut Vec<Error>,
-) -> Option<ExpressionSpanned> {
-    return parse_assigment(iter, errors);
-}
-
-fn parse_assigment(
-    iter: &mut Peekable<Iter<TokenSpanned>>,
-    errors: &mut Vec<Error>,
-) -> Option<ExpressionSpanned> {
-    let mut left = parse_relational(iter, errors)?;
-
-    match iter.peek() {
-        Some(TokenSpanned {
-            token: Token::EqualSign,
-            span: _,
-        }) => {
-            iter.next();
-            let right = parse_relational(iter, errors)?;
-            left = ExpressionSpanned {
-                span: Span::between(&left.span, &right.span),
-                expression: Expression::Assigment {
-                    left: Box::new(left),
-                    right: Box::new(right),
-                },
-            }
-        }
-        _ => {
-            return Some(left);
-        }
-    }
-
-    return Some(left);
-}
-
-fn parse_relational(
-    iter: &mut Peekable<Iter<TokenSpanned>>,
-    errors: &mut Vec<Error>,
-) -> Option<ExpressionSpanned> {
-    let mut left = parse_addition(iter, errors)?;
-
-    match iter.peek() {
-        Some(TokenSpanned {
-            token: Token::CompareEqual,
-            span: _,
-        }) => {
-            iter.next();
-            let right = parse_addition(iter, errors)?;
-            left = ExpressionSpanned {
-                span: Span::between(&left.span, &right.span),
-                expression: Expression::ComparisonExpression {
-                    left: Box::new(left),
-                    right: Box::new(right),
-                    operator: ComparisonOperator::CompareEqual,
-                },
-            };
-        }
-        Some(TokenSpanned {
-            token: Token::LargerThan,
-            span: _,
-        }) => {
-            iter.next();
-            let right = parse_addition(iter, errors)?;
-            left = ExpressionSpanned {
-                span: Span::between(&left.span, &right.span),
-                expression: Expression::ComparisonExpression {
-                    left: Box::new(left),
-                    right: Box::new(right),
-                    operator: ComparisonOperator::CompareLarger,
-                },
-            };
-        }
-        Some(TokenSpanned {
-            token: Token::SmallerThan,
-            span: _,
-        }) => {
-            iter.next();
-            let right = parse_addition(iter, errors)?;
-            left = ExpressionSpanned {
-                span: Span::between(&left.span, &right.span),
-                expression: Expression::ComparisonExpression {
-                    left: Box::new(left),
-                    right: Box::new(right),
-                    operator: ComparisonOperator::CompareSmaller,
-                },
-            };
-        }
-        _ => {
-            return Some(left);
-        }
-    }
-
-    return Some(left);
-}
-
-fn parse_addition(
-    iter: &mut Peekable<Iter<TokenSpanned>>,
-    errors: &mut Vec<Error>,
-) -> Option<ExpressionSpanned> {
-    let mut left = parse_multiplication(iter, errors)?;
-
-    while let Some(TokenSpanned { token, span: _ }) = iter.peek() {
-        match token {
-            Token::PlusSign => {
-                iter.next();
-                let right = parse_multiplication(iter, errors)?;
-                left = ExpressionSpanned {
-                    span: Span::between(&left.span, &right.span),
-                    expression: Expression::ArithmeticExpression {
-                        left: Box::new(left),
-                        right: Box::new(right),
-                        operator: ArithmeticOperator::Add,
-                    },
-                };
-            }
-            Token::MinusSign => {
-                iter.next();
-                let right = parse_multiplication(iter, errors)?;
-                left = ExpressionSpanned {
-                    span: Span::between(&left.span, &right.span),
-                    expression: Expression::ArithmeticExpression {
-                        left: Box::new(left),
-                        right: Box::new(right),
-                        operator: ArithmeticOperator::Subtract,
-                    },
-                };
-            }
-            _ => return Some(left),
-        }
-    }
-
-    return Some(left);
-}
-
-fn parse_multiplication(
-    iter: &mut Peekable<Iter<TokenSpanned>>,
-    errors: &mut Vec<Error>,
-) -> Option<ExpressionSpanned> {
-    let mut left = parse_literals_pointers(iter, errors)?;
-
-    while let Some(TokenSpanned { token, span: _ }) = iter.peek() {
-        match token {
-            Token::MultiplySign => {
-                iter.next();
-                let right = parse_literals_pointers(iter, errors)?;
-                left = ExpressionSpanned {
-                    span: Span::between(&left.span, &right.span),
-                    expression: Expression::ArithmeticExpression {
-                        left: Box::new(left),
-                        right: Box::new(right),
-                        operator: ArithmeticOperator::Multiply,
-                    },
-                };
-            }
-            Token::DivisionSign => {
-                iter.next();
-                let right = parse_literals_pointers(iter, errors)?;
-                left = ExpressionSpanned {
-                    span: Span::between(&left.span, &right.span),
-                    expression: Expression::ArithmeticExpression {
-                        left: Box::new(left),
-                        right: Box::new(right),
-                        operator: ArithmeticOperator::Divide,
-                    },
-                };
-            }
-            _ => return Some(left),
-        }
-    }
-
-    return Some(left);
-}
-
-fn parse_literals_pointers(
-    iter: &mut Peekable<Iter<TokenSpanned>>,
-    errors: &mut Vec<Error>,
-) -> Option<ExpressionSpanned> {
-    let Some(TokenSpanned { token, span }) = iter.peek() else {
-        return None;
-    };
-    match token {
-        Token::IntLiteral(value) => {
-            iter.next();
-            Some(ExpressionSpanned {
-                span: *span,
-                expression: Expression::IntLiteral(*value),
-            })
-        }
-        Token::FloatLiteral(value) => {
-            iter.next();
-            Some(ExpressionSpanned {
-                span: *span,
-                expression: Expression::FloatLiteral(value.clone()),
-            })
-        }
-        Token::CharacterLiteral(c) => {
-            iter.next();
-            Some(ExpressionSpanned {
-                span: *span,
-                expression: Expression::CharacterLiteral(*c),
-            })
-        }
-        Token::BoolLiteral(b) => {
-            iter.next();
-            Some(ExpressionSpanned {
-                span: *span,
-                expression: Expression::BoolLiteral(*b),
-            })
-        }
-        Token::StringLiteral(value) => {
-            iter.next();
-            Some(ExpressionSpanned {
-                span: *span,
-                expression: Expression::StringLiteral(value.clone()),
-            })
-        }
-        Token::MultiplySign => {
-            iter.next();
-            Some(ExpressionSpanned {
-                span: *span,
-                expression: Expression::Dereference(Box::new(parse_member_access(iter, errors)?)),
-            })
-        }
-        Token::Ampersand => {
-            iter.next();
-            Some(ExpressionSpanned {
-                span: *span,
-                expression: Expression::AddressOf(Box::new(parse_member_access(iter, errors)?)),
-            })
-        }
-        _ => parse_member_access(iter, errors),
-    }
-}
-
-fn parse_member_access(
-    iter: &mut Peekable<Iter<TokenSpanned>>,
-    errors: &mut Vec<Error>,
-) -> Option<ExpressionSpanned> {
-    let mut expression = parse_atom(iter, errors)?;
-
-    while let Some(TokenSpanned {
-        token: Token::Period,
-        span,
-    }) = iter.peek()
-    {
-        iter.next();
-        expression = ExpressionSpanned {
-            span: *span,
-            expression: Expression::MemberAccess {
-                left: Box::new(expression),
-                right: Box::new(parse_atom(iter, errors)?),
-            },
-        };
-    }
-
-    return Some(expression);
-}
-
-fn parse_atom(
-    iter: &mut Peekable<Iter<TokenSpanned>>,
-    errors: &mut Vec<Error>,
-) -> Option<ExpressionSpanned> {
-    match iter.next() {
-        Some(TokenSpanned {
-            token: Token::Identifier(identifier),
-            span,
-        }) => parse_identifier(iter, identifier.clone(), errors, span),
-        Some(TokenSpanned {
-            token: Token::ParenthesisOpen,
-            span,
-        }) => {
-            let expression = parse_expression(iter, errors);
-            if let Some(TokenSpanned {
-                token: Token::ParenthesisClose,
-                span: _,
-            }) = iter.next()
-            {
-                expression
-            } else {
-                errors.push(Error {
-                    span: *span,
-                    msg: "Expected `)`.".to_string(),
-                });
-                None
-            }
-        }
-        Some(TokenSpanned {
-            token: Token::PlusSign,
-            span,
-        }) => {
-            if let Some((
-                TokenSpanned {
-                    token: Token::PlusSign,
-                    span: _,
-                },
-                TokenSpanned {
-                    token: Token::Identifier(identifier),
-                    span: identifier_span,
-                },
-            )) = iter.next_tuple()
-            {
-                let identifier =
-                    parse_identifier(iter, identifier.clone(), errors, &identifier_span)?;
-                Some(ExpressionSpanned {
-                    span: Span::between(span, &identifier.span),
-                    expression: Expression::Increment(Box::new(identifier)),
-                })
-            } else {
-                errors.push(Error {
-                    span: *span,
-                    msg: "Expected `++identifier`.".to_string(),
-                });
-                None
-            }
-        }
-        Some(TokenSpanned {
-            token: Token::MinusSign,
-            span,
-        }) => {
-            if let Some((
-                TokenSpanned {
-                    token: Token::MinusSign,
-                    span: _,
-                },
-                TokenSpanned {
-                    token: Token::Identifier(identifier),
-                    span: identifier_span,
-                },
-            )) = iter.next_tuple()
-            {
-                let identifier =
-                    parse_identifier(iter, identifier.clone(), errors, &identifier_span)?;
-                Some(ExpressionSpanned {
-                    span: Span::between(span, &identifier.span),
-                    expression: Expression::Decrement(Box::new(identifier)),
-                })
-            } else {
-                errors.push(Error {
-                    span: *span,
-                    msg: "Expected `--identifier`.".to_string(),
-                });
-                None
-            }
-        }
-        Some(TokenSpanned { token, span }) => {
-            errors.push(Error {
-                span: *span,
-                msg: format!("Expected `(` or an identifier, got: `{:?}`.", token),
-            });
-            None
-        }
-        None => {
-            errors.push(Error {
-                span: Span::eof(),
-                msg: "Reached the end of file in a middle of an expression.".to_string(),
-            });
-            None
-        }
-    }
-}
-
-fn parse_identifier(
-    iter: &mut Peekable<Iter<TokenSpanned>>,
-    identifier: String,
-    errors: &mut Vec<Error>,
-    identifier_span: &Span,
-) -> Option<ExpressionSpanned> {
-    match iter.peek() {
-        Some(TokenSpanned {
-            token: Token::SquareParenthesisOpen,
-            span: _,
-        }) => {
-            let expression = parse_expression(iter, errors)?;
-            let mut end = &expression.span;
-            match iter.next() {
-                Some(TokenSpanned {
-                    token: Token::SquareParenthesisClose,
-                    span,
-                }) => end = span,
-                _ => {
-                    errors.push(Error {
-                        span: *end,
-                        msg: "Expected `]`.".to_string(),
-                    });
-                }
-            }
-            Some(ExpressionSpanned {
-                span: Span::between(identifier_span, end),
-                expression: Expression::ArraySubscript {
-                    identifier: IdentifierSpanned {
-                        identifier,
-                        span: *identifier_span,
-                    },
-                    element: Box::new(expression),
-                },
-            })
-        }
-        Some(TokenSpanned {
-            token: Token::ParenthesisOpen,
-            span,
-        }) => {
-            iter.next();
-            let arguments = if let Some(TokenSpanned {
-                token: Token::ParenthesisClose,
-                span: _,
-            }) = iter.peek()
-            {
-                Vec::new()
-            } else {
-                parse_arguments_passing(iter, errors)
-            };
-
-            if let Some(TokenSpanned {
-                token: Token::ParenthesisClose,
-                span: end,
-            }) = iter.next()
-            {
-                let span = Span::between(span, end);
-                Some(ExpressionSpanned {
-                    span,
-                    expression: Expression::FunctionCall(FunctionCall {
-                        identifier: IdentifierSpanned {
-                            identifier,
-                            span: *identifier_span,
-                        },
-                        arguments,
-                        span,
-                    }),
-                })
-            } else {
-                errors.push(Error {
-                    span: *span,
-                    msg: "Expected `)` at the end of function call.".to_string(),
-                });
-                Some(ExpressionSpanned {
-                    span: *span,
-                    expression: Expression::FunctionCall(FunctionCall {
-                        identifier: IdentifierSpanned {
-                            identifier,
-                            span: *identifier_span,
-                        },
-                        arguments,
-                        span: *span,
-                    }),
-                })
-            }
-        }
-        Some(TokenSpanned {
-            token: Token::CurlyBracketOpen,
-            span,
-        }) => {
-            iter.next();
-            let mut members: Vec<(String, Option<ExpressionSpanned>)> = Vec::new();
-            'outer: loop {
-                if let Some(TokenSpanned {
-                    token: Token::Identifier(identifier),
-                    span,
-                }) = iter.next()
-                {
-                    match iter.next() {
-                        Some(TokenSpanned {
-                            token: Token::Colon,
-                            span: _,
-                        }) => {}
-                        _ => {
-                            errors.push(Error {
-                                span: *span,
-                                msg: "Expected `:` after a member identifier in a struct literal."
-                                    .to_string(),
-                            });
                         }
                     }
-                    members.push((identifier.clone(), parse_expression(iter, errors)));
-                    match iter.peek() {
-                        Some(TokenSpanned {
-                            token: Token::Coma,
-                            span: _,
-                        }) => {
-                            iter.next();
-                        }
-                        Some(TokenSpanned {
-                            token: Token::CurlyBracketClose,
-                            span: _,
-                        }) => break,
-                        Some(TokenSpanned { token: _, span }) => {
-                            errors.push(Error {
-                                span: *span,
-                                msg: "Expected `,` or `}` in a struct literal.".to_string(),
-                            });
-                            while let Some(TokenSpanned { token, span: _ }) = iter.peek() {
-                                match token {
-                                    Token::Coma => {
-                                        iter.next();
-                                        break;
-                                    }
-                                    Token::CurlyBracketClose => {
-                                        break 'outer;
-                                    }
-                                    _ => iter.next(),
-                                };
+                    Token::ParenthesisOpen => {
+                        self.next();
+                        let mut arguments = Vec::new();
+                        let mut first = true;
+
+                        while !self.eat(&Token::ParenthesisClose) {
+                            if first {
+                                first = false;
+                            } else {
+                                self.eat_or_err(&Token::Coma);
+                            }
+                            if let Some(expr) = self.parse_expression(0) {
+                                arguments.push(expr);
                             }
                         }
-                        _ => break,
+
+                        let call_span = Span::between(&span, &self.prev().span);
+                        Some(ExpressionSpanned {
+                            span: call_span,
+                            expression: Expression::FunctionCall(FunctionCall {
+                                identifier: IdentifierSpanned { identifier: ident.clone(), span },
+                                arguments,
+                                span: call_span,
+                            }),
+                        })
                     }
-                } else {
-                    errors.push(Error {
-                        span: *span,
-                        msg: "Expected a member identifier in a struct literal.".to_string(),
-                    });
+                    Token::CurlyBracketOpen => {
+                        self.next();
+                        let mut members = Vec::new();
+                        self.parse_definitions(&Token::CurlyBracketClose, |ident, this| {
+                            let expr = this.parse_expression(0);
+                            if let Some(ident) = ident {
+                                members.push((ident.identifier, expr));
+                            }
+                        });
+                        Some(ExpressionSpanned {
+                            span: Span::between(&span, &self.prev().span),
+                            expression: Expression::StructLiteral {
+                                identifier: IdentifierSpanned {
+                                    identifier: ident.clone(),
+                                    span,
+                                },
+                                members,
+                            },
+                        })
+                    }
+                    _ => Some(ExpressionSpanned {
+                        span,
+                        expression: Expression::Identifier(IdentifierSpanned {
+                            identifier: ident.clone(),
+                            span,
+                        }),
+                    }),
                 }
             }
-
-            if let Some(TokenSpanned {
-                token: Token::CurlyBracketClose,
-                span: end,
-            }) = iter.next()
-            {
-                Some(ExpressionSpanned {
-                    span: Span::between(span, end),
-                    expression: Expression::StructLiteral {
-                        identifier: IdentifierSpanned {
-                            identifier,
-                            span: *identifier_span,
-                        },
-                        members,
-                    },
-                })
-            } else {
-                errors.push(Error {
-                    span: *span,
-                    msg: "Expected `}}` at the end of a struct literal.".to_string(),
-                });
-                Some(ExpressionSpanned {
-                    span: *span,
-                    expression: Expression::StructLiteral {
-                        identifier: IdentifierSpanned {
-                            identifier,
-                            span: *identifier_span,
-                        },
-                        members,
-                    },
-                })
+            Token::ParenthesisOpen => {
+                self.next();
+                let expr = self.parse_expression(0);
+                self.eat_or_err(&Token::ParenthesisClose);
+                expr
+            }
+            _ => {
+                self.err_expected("an expression");
+                None
             }
         }
-        _ => Some(ExpressionSpanned {
-            span: *identifier_span,
-            expression: Expression::Identifier(IdentifierSpanned {
-                identifier: identifier.clone(),
-                span: *identifier_span,
-            }),
-        }),
+    }
+
+    /// Does NOT consume the current token.
+    fn parse_binary_operator(&mut self) -> Option<BinaryOperator> {
+        match self.token.token {
+            Token::EqualSign => Some(BinaryOperator::Assign),
+            Token::CompareEqual => Some(BinaryOperator::CompareEqual),
+            Token::PlusSign => Some(BinaryOperator::Add),
+            Token::MultiplySign => Some(BinaryOperator::Multiply),
+            Token::MinusSign => Some(BinaryOperator::Subtract),
+            Token::DivisionSign => Some(BinaryOperator::Divide),
+            Token::LargerThan => Some(BinaryOperator::CompareLarger),
+            Token::SmallerThan => Some(BinaryOperator::CompareSmaller),
+            Token::Period => Some(BinaryOperator::MemberAccess),
+            _ => None,
+        }
+    }
+
+    /// Does consume the current token if parsed.
+    fn parse_unary_operator(&mut self) -> Option<(UnaryOperator, Span)> {
+        let op = match self.token.token {
+            Token::MultiplySign => Some(UnaryOperator::Dereference),
+            Token::Ampersand => Some(UnaryOperator::AddressOf),
+            Token::Bang => Some(UnaryOperator::LogicalNot),
+            Token::MinusSign => Some(UnaryOperator::Negation),
+            _ => None,
+        };
+
+        if let Some(op) = op {
+            let span = self.token.span;
+            self.next();
+            Some((op, span))
+        } else {
+            None
+        }
     }
 }

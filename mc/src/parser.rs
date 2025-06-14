@@ -1,5 +1,5 @@
-use crate::tokenizer::*;
 use crate::ast::*;
+use crate::tokenizer::*;
 
 pub struct Parser<'a> {
     tokens: &'a [TokenSpanned],
@@ -73,7 +73,7 @@ impl Parser<'_> {
         if let Token::Identifier(identifier) = &self.token.token {
             self.next();
             Some(IdentifierSpanned {
-                identifier: identifier.clone(),
+                ident: identifier.clone(),
                 span: self.token.span,
             })
         } else {
@@ -94,14 +94,14 @@ impl Parser<'_> {
             Token::DataType(data_type) => {
                 self.next();
                 Some(data_type.clone())
-            },
+            }
             Token::Identifier(identifier) => {
                 self.next();
                 Some(DataType::Struct(IdentifierSpanned {
-                            identifier: identifier.clone(),
-                            span: self.token.span,
-                        }))
-            },
+                    ident: identifier.clone(),
+                    span: self.token.span,
+                }))
+            }
             _ => {
                 self.err_expected("a type");
                 None
@@ -132,12 +132,14 @@ impl Parser<'_> {
 
     /// Expects that `fn` was already consumed.
     fn parse_fn(&mut self, public: bool) {
-        let name = self.parse_ident_or_err();
+        let ident = self.parse_ident_or_err();
         self.eat_or_err(&Token::ParenthesisOpen);
-        let mut arguments: Vec<DataType> = Vec::new();
-        self.parse_definitions(&Token::ParenthesisClose, |_ident, this| {
+        let mut arguments: Vec<(IdentifierSpanned, DataType)> = Vec::new();
+        self.parse_definitions(&Token::ParenthesisClose, |ident, this| {
             if let Some(data_type) = this.parse_type() {
-                arguments.push(data_type);
+                if let Some(ident) = ident {
+                    arguments.push((ident, data_type));
+                }
             }
         });
 
@@ -148,19 +150,19 @@ impl Parser<'_> {
         };
 
         if self.eat(&Token::Semicolon) {
-            if let Some(name) = name {
+            if let Some(ident) = ident {
                 self.function_declarations.push(FunctionPrototype {
-                    name,
+                    ident,
                     return_type,
                     arguments,
                 });
             }
         } else if self.eat(&Token::CurlyBracketOpen) {
             let body = self.parse_scope();
-            if let Some(name) = name {
+            if let Some(name) = ident {
                 self.functions.push(FunctionDefinition {
                     prototype: FunctionPrototype {
-                        name,
+                        ident: name,
                         return_type,
                         arguments,
                     },
@@ -181,18 +183,16 @@ impl Parser<'_> {
             if let Some(data_type) = this.parse_type() {
                 if let Some(identifier) = ident {
                     members.push(StructMember {
-                        identifier,
+                        ident: identifier,
                         data_type,
                     });
                 }
             }
         });
 
-        if let Some(identifier) = ident {
-            self.struct_declarations.push(StructDeclaration {
-                identifier,
-                members,
-            });
+        if let Some(ident) = ident {
+            self.struct_declarations
+                .push(StructDeclaration { ident, members });
         }
     }
 
@@ -211,7 +211,7 @@ impl Parser<'_> {
             self.eat_or_err(&Token::Colon);
             let data_type = self.parse_type();
 
-            let expr = if self.eat(&Token::EqualSign) {
+            let expression = if self.eat(&Token::EqualSign) {
                 let expr = self.parse_expression(0);
                 expr
             } else {
@@ -219,8 +219,8 @@ impl Parser<'_> {
             };
             self.eat_or_err(&Token::Semicolon);
             Some(Statement::VariableDefinition {
-                identifier: ident?,
-                expression: expr.map(Box::new),
+                ident: ident?,
+                expression,
                 data_type: data_type?,
             })
         } else if self.eat(&Token::If) {
@@ -264,7 +264,7 @@ impl Parser<'_> {
             lhs = ExpressionSpanned {
                 span: Span::between(&span, &lhs.span),
                 expression: Expression::Unary {
-                    exp: Box::new(lhs),
+                    expr: Box::new(lhs),
                     operator,
                 },
             }
@@ -324,7 +324,7 @@ impl Parser<'_> {
                 expression: Expression::Binary {
                     lhs: Box::new(lhs),
                     rhs: Box::new(rhs),
-                    operator: BinaryOperator::MemberAccess,
+                    operator: BinaryOp::MemberAccess,
                 },
             }
         }
@@ -346,8 +346,8 @@ impl Parser<'_> {
                             Some(ExpressionSpanned {
                                 span: Span::between(&span, &expr.span),
                                 expression: Expression::ArraySubscript {
-                                    identifier: IdentifierSpanned {
-                                        identifier: ident.clone(),
+                                    ident: IdentifierSpanned {
+                                        ident: ident.clone(),
                                         span,
                                     },
                                     element: Box::new(expr),
@@ -377,7 +377,10 @@ impl Parser<'_> {
                         Some(ExpressionSpanned {
                             span: call_span,
                             expression: Expression::FunctionCall(FunctionCall {
-                                identifier: IdentifierSpanned { identifier: ident.clone(), span },
+                                ident: IdentifierSpanned {
+                                    ident: ident.clone(),
+                                    span,
+                                },
                                 arguments,
                                 span: call_span,
                             }),
@@ -389,14 +392,14 @@ impl Parser<'_> {
                         self.parse_definitions(&Token::CurlyBracketClose, |ident, this| {
                             let expr = this.parse_expression(0);
                             if let Some(ident) = ident {
-                                members.push((ident.identifier, expr));
+                                members.push((ident, expr));
                             }
                         });
                         Some(ExpressionSpanned {
                             span: Span::between(&span, &self.prev().span),
                             expression: Expression::StructLiteral {
-                                identifier: IdentifierSpanned {
-                                    identifier: ident.clone(),
+                                ident: IdentifierSpanned {
+                                    ident: ident.clone(),
                                     span,
                                 },
                                 members,
@@ -406,7 +409,7 @@ impl Parser<'_> {
                     _ => Some(ExpressionSpanned {
                         span,
                         expression: Expression::Identifier(IdentifierSpanned {
-                            identifier: ident.clone(),
+                            ident: ident.clone(),
                             span,
                         }),
                     }),
@@ -426,17 +429,20 @@ impl Parser<'_> {
     }
 
     /// Does NOT consume the current token.
-    fn parse_binary_operator(&mut self) -> Option<BinaryOperator> {
+    fn parse_binary_operator(&mut self) -> Option<BinaryOp> {
+        use ArithmeticOp::*;
+        use BinaryOp::*;
+        use BoolOp::*;
         match self.token.token {
-            Token::EqualSign => Some(BinaryOperator::Assign),
-            Token::CompareEqual => Some(BinaryOperator::CompareEqual),
-            Token::PlusSign => Some(BinaryOperator::Add),
-            Token::MultiplySign => Some(BinaryOperator::Multiply),
-            Token::MinusSign => Some(BinaryOperator::Subtract),
-            Token::DivisionSign => Some(BinaryOperator::Divide),
-            Token::LargerThan => Some(BinaryOperator::CompareLarger),
-            Token::SmallerThan => Some(BinaryOperator::CompareSmaller),
-            Token::Period => Some(BinaryOperator::MemberAccess),
+            Token::EqualSign => Some(Assign),
+            Token::CompareEqual => Some(Bool(Equal)),
+            Token::PlusSign => Some(Arithmetic(Add)),
+            Token::MultiplySign => Some(Arithmetic(Mul)),
+            Token::MinusSign => Some(Arithmetic(Sub)),
+            Token::DivisionSign => Some(Arithmetic(Div)),
+            Token::LargerThan => Some(Bool(Larger)),
+            Token::SmallerThan => Some(Bool(Smaller)),
+            Token::Period => Some(MemberAccess),
             _ => None,
         }
     }

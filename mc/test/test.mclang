@@ -5,14 +5,7 @@ struct grzybex {
     b: i64
 }
 
-public fn main() {
-    let a: i64 = 5 + 2 - (8 * 15) / 3;
-    let c: char = 'd' + 6;
-    let nubert: grzybex = grzybex {
-        a: a + 2,
-        b: 'f'
-    };
-
+public fn main() -> i64 {
     mytest();
     return 0;
 }

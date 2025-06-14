@@ -4,10 +4,10 @@ use crate::ast::IdentifierSpanned;
 
 #[derive(Debug, PartialEq)]
 pub enum Token {
-    IntLiteral(i32),
+    IntLiteral(i64),
     CharacterLiteral(char),
     BoolLiteral(bool),
-    FloatLiteral(String),
+    FloatLiteral(f32),
     Semicolon,
     DataType(DataType),
     Identifier(String),
@@ -228,7 +228,7 @@ pub fn tokenize(contents: &str) -> TokenizedFile {
             }
 
             if is_float {
-                if let Ok(_) = buffer.parse::<f32>() {
+                if let Ok(val) = buffer.parse::<f32>() {
                     let span = Span {
                         line: state.line,
                         column: pos - state.line_begin_pos,
@@ -236,7 +236,7 @@ pub fn tokenize(contents: &str) -> TokenizedFile {
                         endcolumn: last_pos - state.line_begin_pos,
                     };
                     state.tokens.push(TokenSpanned {
-                        token: Token::FloatLiteral(buffer),
+                        token: Token::FloatLiteral(val),
                         span,
                     });
                 } else {
@@ -248,7 +248,7 @@ pub fn tokenize(contents: &str) -> TokenizedFile {
                     );
                 }
             } else {
-                if let Ok(num) = buffer.parse::<i32>() {
+                if let Ok(num) = buffer.parse::<i64>() {
                     let span = Span {
                         line: state.line,
                         column: pos - state.line_begin_pos,

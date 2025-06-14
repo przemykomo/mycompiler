@@ -1,8 +1,9 @@
+// #![allow(warnings)]
 use std::env;
 use std::fs;
-// use std::io::Write;
 
 mod tokenizer;
+use ir::IRGen;
 use itertools::Itertools;
 use tokenizer::*;
 
@@ -10,8 +11,7 @@ mod parser;
 use parser::*;
 
 pub mod ast;
-// mod compiler;
-// use compiler::*;
+pub mod ir;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -36,21 +36,14 @@ fn main() {
     parser.parse();
 
     print_errors(&parser.errors, &lines, read_file_path);
-    dbg!(
-        parser.function_declarations,
-        parser.struct_declarations,
-        parser.functions
-    );
 
-    // let compiled_unit = compile_to_assembly(&parsed_unit);
-    // if print_errors(&compiled_unit.errors, &lines, &read_file_path) {
-    //     return;
-    // }
-    //
-    // let mut file = fs::File::create(write_file_path)
-    //     .expect("Should have been able to open this file for writing");
-    // file.write_all(compiled_unit.asm.as_bytes())
-    //     .expect("Should have been able to write to this file.");
+    let mut irgen = IRGen::new(&parser);
+    irgen.generate_ir();
+
+    if print_errors(&irgen.errors, &lines, read_file_path) {
+        return;
+    }
+
 }
 
 fn print_errors(errors: &[Error], lines: &[&str], read_file_path: &str) -> bool {

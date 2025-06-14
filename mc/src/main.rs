@@ -11,6 +11,7 @@ mod parser;
 use parser::*;
 
 pub mod ast;
+pub mod compile;
 pub mod ir;
 
 fn main() {
@@ -44,6 +45,7 @@ fn main() {
         return;
     }
 
+    compile::compile_elf_object(&irgen, write_file_path);
 }
 
 fn print_errors(errors: &[Error], lines: &[&str], read_file_path: &str) -> bool {

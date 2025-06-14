@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 itertools = "0.11.0"
+object = { version = "0.37.1", features = ["build"] }
 
 [lib]
 name = "mc"

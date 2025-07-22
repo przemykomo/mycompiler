@@ -71,12 +71,40 @@ pub enum ArithmeticOp {
     Mul,
     Div,
 }
+impl ArithmeticOp {
+    pub fn perform<
+        T: std::ops::Add<Output = T>
+            + std::ops::Sub<Output = T>
+            + std::ops::Mul<Output = T>
+            + std::ops::Div<Output = T>,
+    >(
+        &self,
+        lhs: T,
+        rhs: T,
+    ) -> T {
+        match self {
+            ArithmeticOp::Add => lhs + rhs,
+            ArithmeticOp::Sub => lhs - rhs,
+            ArithmeticOp::Mul => lhs * rhs,
+            ArithmeticOp::Div => lhs / rhs,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum BoolOp {
     Equal,
     Larger,
     Smaller,
+}
+impl BoolOp {
+    pub fn perform<T: std::cmp::PartialEq + std::cmp::PartialOrd>(&self, lhs: T, rhs: T) -> bool {
+        match self {
+            BoolOp::Equal => lhs == rhs,
+            BoolOp::Larger => lhs > rhs,
+            BoolOp::Smaller => lhs < rhs,
+        }
+    }
 }
 
 #[derive(Debug)]

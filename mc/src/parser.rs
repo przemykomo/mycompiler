@@ -465,4 +465,16 @@ impl Parser<'_> {
             None
         }
     }
+
+    pub fn get_function(&self, ident: &str) -> Option<&FunctionPrototype> {
+        self.function_declarations
+            .iter()
+            .find(|dec| dec.ident.ident == ident)
+            .or_else(|| {
+                self.functions
+                    .iter()
+                    .find(|dec| dec.prototype.ident.ident == ident)
+                    .map(|dec| &dec.prototype)
+            })
+    }
 }

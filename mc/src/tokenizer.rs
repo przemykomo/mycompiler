@@ -165,7 +165,7 @@ pub fn tokenize(contents: &str) -> TokenizedFile {
             loop {
                 buffer.push(c);
                 if let Some((_, temp)) = iter.peek() {
-                    if temp.is_alphanumeric() || c == '_' {
+                    if temp.is_alphanumeric() || *temp == '_' {
                         (last_pos, c) = iter.next().unwrap();
                     } else {
                         break;

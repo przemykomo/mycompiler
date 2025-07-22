@@ -1,9 +1,6 @@
 #![allow(warnings)]
-use std::fmt::Display;
-use std::rc::Rc;
+use std::fmt::{Debug, Display, Write};
 use std::usize;
-
-use itertools::Itertools;
 
 use crate::ast::{
     ArithmeticOp, BinaryOp, BoolOp, Expression, ExpressionSpanned, Statement, UnaryOperator,
@@ -13,11 +10,21 @@ use crate::parser::Parser;
 use crate::tokenizer::DataType;
 use crate::tokenizer::Error;
 
-struct List<'a, T: ToString>(&'a [T]);
+struct List<'a, T: Display>(&'a [T]);
 
-impl<'a, T: ToString> Display for List<'a, T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{}]", self.0.iter().map(|i| i.to_string()).join(", "))
+impl<'a, T: Display> Display for List<'a, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let vec = &self.0;
+
+        write!(f, "[")?;
+
+        for (count, v) in vec.iter().enumerate() {
+            if count != 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", v)?;
+        }
+        write!(f, "]")
     }
 }
 
@@ -28,9 +35,10 @@ pub enum Value {
     ImmediateString(String),
     StructLiteral(Vec<Value>),
     ArrayAccess {
-        var: Rc<Variable>,
-        index: Box<Value>,
+        var_index: usize,
+        array_index: Box<Value>,
     },
+    Variable(usize),
     MemberAccess,
     Temporary(usize),
     Call(String, Vec<Value>),
@@ -39,12 +47,13 @@ pub enum Value {
 #[derive(Debug)]
 pub struct Variable {
     ident: String,
-    data_type: DataType,
+    pub data_type: DataType,
     initialized: bool,
+    pub argument: bool,
 }
 
 pub struct IRGen<'a> {
-    parser: &'a Parser<'a>,
+    pub parser: &'a Parser<'a>,
     pub errors: Vec<Error>,
     pub functions: Vec<IRFunc>,
 }
@@ -55,6 +64,17 @@ pub struct IRFunc {
     pub scope: Scope,
 }
 
+impl Display for IRFunc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "fn {}:", self.ident)?;
+        for (i, instruction) in self.scope.instructions.iter().enumerate() {
+            writeln!(f, "{}:    {:?}", i, instruction)?;
+        }
+
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 enum IRType {
     I64,
@@ -63,12 +83,12 @@ enum IRType {
 
 #[derive(Debug)]
 pub struct TempVar {
-    ir_type: IRType,
+    ir_type: IRType, //TODO: I might remove the IR types entirely
 }
 
 #[derive(Debug)]
 pub struct Scope {
-    pub vars: Vec<Rc<Variable>>,
+    pub vars: Vec<Variable>,
     pub temps: Vec<TempVar>,
     pub instructions: Vec<Instruction>,
 }
@@ -80,20 +100,27 @@ impl<'a> Scope {
     }
 
     fn move_to_temp(&'a mut self, val: Value) -> usize {
-        match val {
+        let temp = match &val {
             Value::ImmediateInt(val) => {
-                let temp = self.temp(IRType::I64);
-                self.instructions.push(Instruction::LoadInt(temp, val));
-                temp
+                // let temp = self.temp(IRType::I64);
+                // self.instructions.push(Instruction::LoadInt(temp, val));
+                // temp
+                self.temp(IRType::I64)
             }
-            Value::ImmediateFloat(_) => todo!(),
-            Value::ImmediateString(_) => todo!(),
-            Value::StructLiteral(values) => todo!(),
-            Value::ArrayAccess { var, index } => todo!(),
-            Value::MemberAccess => todo!(),
-            Value::Temporary(temp_var) => temp_var,
-            Value::Call(_, values) => todo!(),
-        }
+            Value::ImmediateFloat(_) => self.temp(IRType::F32),
+            Value::ImmediateString(_) => self.temp(IRType::I64),
+            Value::StructLiteral(values) => self.temp(IRType::I64),
+            Value::ArrayAccess {
+                var_index,
+                array_index,
+            } => self.temp(IRType::I64),
+            Value::MemberAccess => self.temp(IRType::I64),
+            Value::Temporary(temp_var) => return *temp_var,
+            Value::Call(_, values) => self.temp(IRType::I64),
+            Value::Variable(_) => self.temp(IRType::I64),
+        };
+        self.instructions.push(Instruction::LoadValue(temp, val));
+        temp
     }
 }
 
@@ -117,12 +144,17 @@ pub enum Instruction {
         rhs: usize,
         result: usize,
     },
-    LoadInt(usize, i64),
-    LoadFloat(usize, f32),
-    Call(String, Vec<usize>),
-    Assign {
+    LoadValue(usize, Value),
+    // LoadInt(usize, i64),
+    // LoadFloat(usize, f32),
+    Call(String, Vec<Value>),
+    AssignTemp {
         lhs: usize,
         rhs: usize,
+    },
+    AssignVar {
+        var: usize,
+        temp: usize,
     },
     Return(Value),
 }
@@ -140,13 +172,14 @@ impl<'a> IRGen<'a> {
         //Since I don't know the structs alignments and the calling convention,
         //all operations in IR must operate on struct members, not the memory directly.
         for function in &self.parser.functions {
-            let mut vars: Vec<Rc<Variable>> = Vec::new();
+            let mut vars: Vec<Variable> = Vec::new();
             for arg in &function.prototype.arguments {
-                vars.push(Rc::new(Variable {
+                vars.push(Variable {
                     ident: arg.0.ident.clone(),
                     data_type: arg.1.clone(),
                     initialized: true,
-                }));
+                    argument: true,
+                });
             }
 
             let mut scope = Scope {
@@ -184,7 +217,8 @@ impl<'a> IRGen<'a> {
                         self.errors.push(Error {
                             span: expr.span,
                             msg: format!(
-                            "Mismatched types. Expected `{return_type:?}`, got `{expr_type:?}`."),
+                                "Mismatched types. Expected `{return_type:?}`, got `{expr_type:?}`."
+                            ),
                         });
                     }
                     scope.instructions.push(Instruction::Return(value));
@@ -194,10 +228,9 @@ impl<'a> IRGen<'a> {
                 if let Some((Value::Call(ident, items), _)) = self.compile_expression(expr, scope) {
                     let instruction = Instruction::Call(
                         ident,
-                        items
-                            .into_iter()
-                            .map(|val| scope.move_to_temp(val))
-                            .collect(),
+                        items, // .into_iter()
+                              // .map(|val| scope.move_to_temp(val))
+                              // .collect(),
                     );
                     scope.instructions.push(instruction);
                 }
@@ -223,17 +256,23 @@ impl<'a> IRGen<'a> {
                                 "Mismatched types. Expected `{data_type:?}`, got `{expr_type:?}`."),
                             });
                         }
+                        let var = scope.vars.len();
+                        let temp = scope.move_to_temp(value);
+                        scope
+                            .instructions
+                            .push(Instruction::AssignVar { var, temp });
                     }
                     true
                 } else {
                     false
                 };
 
-                scope.vars.push(Rc::new(Variable {
+                scope.vars.push(Variable {
                     ident: ident.ident.clone(),
                     data_type: data_type.clone(),
                     initialized,
-                }));
+                    argument: false,
+                });
             }
         }
     }
@@ -327,19 +366,7 @@ impl<'a> IRGen<'a> {
                 ))
             }
             Expression::FunctionCall(call) => {
-                let Some(func) = self
-                    .parser
-                    .function_declarations
-                    .iter()
-                    .find(|dec| dec.ident.ident == call.ident.ident)
-                    .or_else(|| {
-                        self.parser
-                            .functions
-                            .iter()
-                            .find(|dec| dec.prototype.ident.ident == call.ident.ident)
-                            .map(|dec| &dec.prototype)
-                    })
-                else {
+                let Some(func) = self.parser.get_function(&call.ident.ident) else {
                     self.errors.push(Error {
                         span: call.ident.span,
                         msg: format!("Cannot find a function `{}`", call.ident.ident),
@@ -384,11 +411,17 @@ impl<'a> IRGen<'a> {
                 ))
             }
             Expression::Identifier(ident) => {
-                if let Some(var) = scope.vars.iter().rev().find(|var| var.ident == ident.ident) {
+                if let Some((var_index, var)) = scope
+                    .vars
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .find(|(_, var)| var.ident == ident.ident)
+                {
                     Some((
                         Value::ArrayAccess {
-                            var: var.clone(),
-                            index: Box::new(Value::ImmediateInt(0)),
+                            var_index,
+                            array_index: Box::new(Value::ImmediateInt(0)),
                         },
                         var.data_type.clone(),
                     ))
@@ -402,7 +435,13 @@ impl<'a> IRGen<'a> {
             }
             Expression::ArraySubscript { ident, element } => {
                 let element = self.compile_expression(element, scope);
-                if let Some(var) = scope.vars.iter().rev().find(|var| var.ident == ident.ident) {
+                if let Some((var_index, var)) = scope
+                    .vars
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .find(|(_, var)| var.ident == ident.ident)
+                {
                     let DataType::Array { data_type, size } = &var.data_type else {
                         return None;
                     };
@@ -410,8 +449,8 @@ impl<'a> IRGen<'a> {
                     if let Some((value, data_type)) = element {
                         Some((
                             Value::ArrayAccess {
-                                var: var.clone(),
-                                index: Box::new(value),
+                                var_index,
+                                array_index: Box::new(value),
                             },
                             data_type.clone(),
                         ))
@@ -448,6 +487,27 @@ impl<'a> IRGen<'a> {
 
                 match left.1 {
                     DataType::I64 => {
+                        if let (Value::ImmediateInt(lhs), Value::ImmediateInt(rhs)) =
+                            (&left.0, &right.0)
+                        {
+                            //TODO: move this into an optimization pass
+                            match op {
+                                BinaryOp::Arithmetic(op) => {
+                                    return Some((
+                                        Value::ImmediateInt(op.perform(*lhs, *rhs)),
+                                        left.1,
+                                    ));
+                                }
+                                BinaryOp::Bool(op) => {
+                                    return Some((
+                                        Value::ImmediateInt(op.perform(*lhs, *rhs) as i64),
+                                        left.1,
+                                    ));
+                                }
+                                BinaryOp::Assign => {}
+                                BinaryOp::MemberAccess => {}
+                            }
+                        }
                         let lhs = scope.move_to_temp(left.0);
                         let rhs = scope.move_to_temp(right.0);
                         let result = scope.temp(IRType::I64);
@@ -469,7 +529,9 @@ impl<'a> IRGen<'a> {
                                 });
                             }
                             BinaryOp::Assign => {
-                                scope.instructions.push(Instruction::Assign { lhs, rhs });
+                                scope
+                                    .instructions
+                                    .push(Instruction::AssignTemp { lhs, rhs });
                             }
                             BinaryOp::MemberAccess => todo!(),
                         }

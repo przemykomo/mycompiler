@@ -1,32 +1,37 @@
-use std::{
-    ffi::{CStr, CString},
-    fs,
-    mem::transmute,
-    str::FromStr,
-};
+// #![allow(unused)]
+use std::{fs, mem::transmute};
 
 use object::{
     build::{
+        Bytes,
         elf::{Builder, Relocation, SectionData, Symbol, SymbolId},
-        ByteString, Bytes,
     },
     elf::{
-        EM_X86_64, ET_REL, R_X86_64_64, R_X86_64_PC32, SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE,
-        SHT_PROGBITS, SHT_RELA, SHT_STRTAB, SHT_SYMTAB, STB_GLOBAL, STB_LOCAL, STT_NOTYPE,
-        STT_SECTION,
+        EM_X86_64, ET_REL, R_X86_64_PC32, SHF_ALLOC, SHF_EXECINSTR, SHT_PROGBITS, SHT_RELA,
+        SHT_STRTAB, SHT_SYMTAB, STB_GLOBAL, STB_LOCAL, STT_NOTYPE, STT_SECTION,
     },
     write::StreamingBuffer,
 };
 
 use crate::{
+    ast::ArithmeticOp,
     ir::{IRGen, Instruction, Value},
     tokenizer::DataType,
 };
+mod regmap;
+use regmap::RegMap;
+
+#[derive(Debug, Clone, Copy)]
+pub enum TempLoc {
+    Reg(Register),
+    Mem(i32),
+    None,
+}
 
 const EXTERN_SYMBOL_ADDEND: i64 = -0x04; // All extern symbol relocations generated using NASM have
-                                         // this addend, no idea why.
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
-enum Register {
+// this addend, no idea why.
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
+pub enum Register {
     RAX = 0,
     RCX = 1,
     RDX = 2,
@@ -45,17 +50,35 @@ enum Register {
     R15 = 15,
 }
 
+const ALL_REGISTERS: [Register; 16] = {
+    use Register::*;
+
+    [
+        RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15,
+    ]
+};
+
 struct Assembler {
     pub data: Vec<u8>,
 }
 
+const REX_W: u8 = 0b01001000;
+const REX_R: u8 = 0b01000100;
+const REX_X: u8 = 0b01000010;
+const REX_B: u8 = 0b01000001;
+
+const MOD_PTR: u8 = 0b00000000;
+const MOD_DISP8: u8 = 0b01000000;
+const MOD_DISP32: u8 = 0b10000000;
+const MOD_REG: u8 = 0b11000000;
+
 impl Assembler {
     pub fn mov(&mut self, reg: Register, val: i64) {
         if reg < Register::R8 {
-            self.data.push(0x48); // REX.W - 64bit version of mov
+            self.data.push(REX_W); // rex.w - 64bit version of mov
             self.data.push(0xb8 + reg as u8);
         } else {
-            self.data.push(0x49); // REX.WB - 64bit version of mov
+            self.data.push(REX_W | REX_B); // rex.wb - 64bit version of mov
             self.data.push(0xb8 + reg as u8 - 8);
         }
         let val: &[u8; 8] = unsafe { transmute(&val) };
@@ -70,14 +93,16 @@ impl Assembler {
         self.data.extend_from_slice(&[0xe8, 0x00, 0x00, 0x00, 0x00]);
     }
 
-    pub fn stackframe_setup(&mut self) {
+    /// Returns the offset of where to patch in the stack size
+    pub fn stackframe_setup(&mut self) -> usize {
         self.push(Register::RBP);
-        // self.mov_reg(Register::RBP, Register::RSP);
-        // sub
+        self.mov_reg(Register::RBP, Register::RSP);
+        self.sub(Register::RSP, 0);
+        return self.data.len() - 1;
     }
 
     pub fn stackframe_cleanup(&mut self) {
-        // self.mov_reg(Register::RSP, Register::RBP);
+        self.mov_reg(Register::RSP, Register::RBP);
         self.pop(Register::RBP);
     }
 
@@ -85,7 +110,7 @@ impl Assembler {
         if reg < Register::R8 {
             self.data.push(0x50 + reg as u8);
         } else {
-            self.data.push(0x41);
+            self.data.push(REX_B);
             self.data.push(0x50 + reg as u8 - 8);
         }
     }
@@ -94,9 +119,201 @@ impl Assembler {
         if reg < Register::R8 {
             self.data.push(0x58 + reg as u8);
         } else {
-            self.data.push(0x41);
+            self.data.push(REX_B);
             self.data.push(0x58 + reg as u8 - 8);
         }
+    }
+
+    pub fn mov_reg(&mut self, left: Register, right: Register) {
+        if left < Register::R8 {
+            if right < Register::R8 {
+                self.data.extend_from_slice(&[REX_W, 0x89]);
+                self.data.push(0xc0 + left as u8 + (right as u8 * 8));
+            } else {
+                self.data.extend_from_slice(&[REX_W | REX_R, 0x89]);
+                self.data.push(0xc0 + left as u8 + ((right as u8 - 8) * 8));
+            }
+        } else {
+            if right < Register::R8 {
+                self.data.extend_from_slice(&[REX_W | REX_B, 0x89]);
+                self.data.push(0xc0 + left as u8 - 8 + (right as u8 * 8));
+            } else {
+                self.data.extend_from_slice(&[REX_W | REX_R | REX_B, 0x89]);
+                self.data
+                    .push(0xc0 + left as u8 - 8 + ((right as u8 - 8) * 8));
+            }
+        }
+    }
+
+    /// Sign extends the value to 64 bits
+    pub fn move_to_mem_sign_extend(&mut self, ptr: Register, offset: i32, val: i32) {
+        // if reg < register::r8 {
+        //     self.data.push(rex_w); // rex.w - 64bit version of mov
+        //     self.data.push(0xb8 + reg as u8);
+        // } else {
+        //     self.data.push(rex_w | rex_b); // rex.wb - 64bit version of mov
+        //     self.data.push(0xb8 + reg as u8 - 8);
+        // }
+        let offset: u8 = i8::cast_unsigned(offset as i8); //TODO?
+        self.data.push(REX_W);
+        self.data.push(0xc7);
+        self.data.push(0x45);
+        self.data.push(offset);
+        let val: &[u8; 4] = unsafe { transmute(&val) };
+        self.data.extend_from_slice(val);
+    }
+
+    pub fn sub(&mut self, reg: Register, val: u8) {
+        if reg < Register::R8 {
+            self.data.push(REX_W);
+            self.data.push(0x83);
+            self.data.push(0xe8 + reg as u8);
+        } else {
+            self.data.push(REX_W | REX_B);
+            self.data.push(0x83);
+            self.data.push(0xe8 + reg as u8 - 8);
+        }
+        self.data.push(val);
+    }
+
+    pub fn add(&mut self, left: Register, right: Register) {
+        if left < Register::R8 {
+            if right < Register::R8 {
+                self.data.extend_from_slice(&[REX_W, 0x01]);
+                self.data.push(0xc0 + left as u8 + (right as u8 * 8));
+            } else {
+                self.data.extend_from_slice(&[REX_W | REX_R, 0x01]);
+                self.data.push(0xc0 + left as u8 + ((right as u8 - 8) * 8));
+            }
+        } else {
+            if right < Register::R8 {
+                self.data.extend_from_slice(&[REX_W | REX_B, 0x01]);
+                self.data.push(0xc0 + left as u8 - 8 + (right as u8 * 8));
+            } else {
+                self.data.extend_from_slice(&[REX_W | REX_R | REX_B, 0x01]);
+                self.data
+                    .push(0xc0 + left as u8 - 8 + ((right as u8 - 8) * 8));
+            }
+        }
+    }
+
+    /// Calculates the REX prefix, ModR/M byte & optionaly SIB or displacement
+    // ------ REX prefix ---------
+    // Bit     7 6 5 4 3 2 1 0
+    // Usage   0 1 0 0 W R X B
+    // - W changes the operand size to 64 bits
+    // - R expands Reg to 4 bits
+    // - X expands SIB index to 4 bits
+    // - B expands R/M or SIB base to 4 bits
+    //
+    // ------ ModR/M byte --------
+    // Bit     7 6 | 5 4 3 | 2 1 0
+    // Usage   Mod |  Reg  |  R/M
+    //
+    // - Adressing Modes:
+    // Mod value    00    |      01     |      10      | 11
+    // R/M = XXX   [RAX]  | [RAX+disp8] | [RAX+disp32] | RAX
+    // R/M = 100   [SIB]  | [SIB+disp8] | [SIB+disp32] | RSP
+    // R/M = 101 [disp32] | [RBP+disp8] | [RBP+disp32] | RBP
+    //            ^--[RIP+disp32] in 64-bit mode,
+    //            [disp32] can be obtained with SIB where Base=101 and Index=100
+    //
+    // ------- SIB byte ----------
+    // Bit     7 6 | 5 4 3 | 2 1 0
+    // Usage Scale | Index | Base
+    // (scale * index) + base + disp
+    //  - Scale is 1, 2, 4, or 8
+    //  - Base and Index encode registers
+    //  - Disp is a normal displacement as specified in the adressing modes, encoded after SIB
+    //
+    fn mod_rm_ptr(reg: Register, rm: Register, offset: i32) -> (u8, u8, Option<u8>, Vec<u8>) {
+        let mut rex = REX_W;
+        if reg >= Register::R8 {
+            rex |= REX_R;
+        }
+        if rm >= Register::R8 {
+            rex |= REX_B;
+        }
+
+        let mut mod_rm = (reg as u8 & 0b111) << 3; // Reg
+        let mut sib: Option<u8> = None;
+        let mut disp: Vec<u8> = Vec::with_capacity(4);
+
+        if offset != 0 {
+            if let Ok(byte) = <i32 as TryInto<i8>>::try_into(offset) {
+                mod_rm |= MOD_DISP8;
+                disp.push(i8::cast_unsigned(byte));
+            } else {
+                mod_rm |= MOD_DISP32;
+                disp.extend_from_slice(&offset.to_ne_bytes());
+            }
+        }
+
+        match rm as u8 & 0b111 {
+            4 => {
+                // R/M = 4 is a special value which specifies that a SIB byte will follow this one
+                mod_rm |= 4;
+                sib = Some(0b00_100_100); // Scale 1, index 0, reg rsp
+            }
+            5 => {
+                // R/M = 5 still means that we use RBP as expected, but a displacement always
+                // has to follow
+                mod_rm |= 5;
+                if offset == 0 {
+                    mod_rm |= MOD_DISP8;
+                    disp.push(0);
+                }
+            }
+            other => {
+                // all other values just mean a specific register
+                mod_rm |= other;
+            }
+        }
+        (rex, mod_rm, sib, disp)
+    }
+
+    pub fn add_mem(&mut self, reg: Register, ptr: Register, offset: i32) {
+        let (rex, mod_rm, sib, disp) = Self::mod_rm_ptr(reg, ptr, offset);
+        self.data.push(rex);
+        self.data.push(0x03);
+        self.data.push(mod_rm);
+        if let Some(sib) = sib {
+            self.data.push(sib);
+        }
+        self.data.extend_from_slice(disp.as_slice());
+    }
+
+    pub fn imul_mem(&mut self, reg: Register, ptr: Register, offset: i32) {
+        let (rex, mod_rm, sib, disp) = Self::mod_rm_ptr(reg, ptr, offset);
+        self.data.push(rex);
+        self.data.extend_from_slice(&[0x0f, 0xaf]);
+        self.data.push(mod_rm);
+        if let Some(sib) = sib {
+            self.data.push(sib);
+        }
+        self.data.extend_from_slice(disp.as_slice());
+    }
+
+    pub fn mov_reg_from_mem(&mut self, reg: Register, ptr: Register, offset: i32) {
+        let (rex, mod_rm, sib, disp) = Self::mod_rm_ptr(reg, ptr, offset);
+        self.data.push(rex);
+        self.data.push(0x8b);
+        self.data.push(mod_rm);
+        if let Some(sib) = sib {
+            self.data.push(sib);
+        }
+        self.data.extend_from_slice(disp.as_slice());
+    }
+
+    pub fn mov_to_mem(&mut self, reg: Register, ptr: Register, offset: i32) {
+        let (rex, mod_rm, sib, disp) = Self::mod_rm_ptr(reg, ptr, offset);
+        self.data.push(rex);
+        self.data.push(0x89);
+        self.data.push(mod_rm);
+        if let Some(sib) = sib {
+            self.data.push(sib);
+        }
+        self.data.extend_from_slice(disp.as_slice());
     }
 }
 
@@ -107,8 +324,22 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
     let mut assembler = Assembler { data: Vec::new() };
 
     for function in &ir.functions {
+        let mut temp_locations: Vec<TempLoc> = vec![TempLoc::None; function.scope.temps.len()];
+        let mut var_locations: Vec<i32> = vec![0; function.scope.vars.len()];
+        let mut regmap = RegMap::new();
+        let mut stack_size: i32 = 0;
+
+        for (var_index, var) in function.scope.vars.iter().enumerate() {
+            if var.argument {
+                todo!();
+            } else {
+                stack_size += sizeof(&var.data_type);
+                var_locations[var_index] = -stack_size;
+            }
+        }
+
         symbols_to_export.push((function.ident.clone(), assembler.data.len() as u64));
-        assembler.stackframe_setup();
+        let stack_size_patch_offset = assembler.stackframe_setup();
         for instruction in &function.scope.instructions {
             match instruction {
                 Instruction::ArithmeticInt {
@@ -116,7 +347,67 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                     lhs,
                     rhs,
                     result,
-                } => todo!(),
+                } => match (temp_locations[*lhs], temp_locations[*rhs]) {
+                    (TempLoc::Reg(left), TempLoc::Reg(right)) => match op {
+                        ArithmeticOp::Add => {
+                            assembler.add(left, right);
+                            temp_locations[*lhs] = TempLoc::None;
+                            temp_locations[*rhs] = TempLoc::None;
+                            temp_locations[*result] = TempLoc::Reg(left);
+                        }
+                        ArithmeticOp::Sub => todo!(),
+                        ArithmeticOp::Mul => todo!(),
+                        ArithmeticOp::Div => todo!(),
+                    },
+                    (TempLoc::Reg(left), TempLoc::Mem(right)) => match op {
+                        ArithmeticOp::Add => {
+                            assembler.add_mem(left, Register::RBP, right);
+                            temp_locations[*lhs] = TempLoc::None;
+                            temp_locations[*rhs] = TempLoc::None;
+                            temp_locations[*result] = TempLoc::Reg(left);
+                        }
+                        ArithmeticOp::Sub => todo!(),
+                        ArithmeticOp::Mul => {
+                            assembler.imul_mem(left, Register::RBP, right);
+                            temp_locations[*lhs] = TempLoc::None;
+                            temp_locations[*rhs] = TempLoc::None;
+                            temp_locations[*result] = TempLoc::Reg(left);
+                        }
+                        ArithmeticOp::Div => todo!(),
+                    },
+                    (TempLoc::Mem(left), TempLoc::Reg(reg)) => match op {
+                        ArithmeticOp::Add => {
+                            assembler.add_mem(reg, Register::RBP, left);
+                            temp_locations[*lhs] = TempLoc::None;
+                            temp_locations[*rhs] = TempLoc::None;
+                            temp_locations[*result] = TempLoc::Reg(reg);
+                        }
+                        ArithmeticOp::Sub => todo!(),
+                        ArithmeticOp::Mul => todo!(),
+                        ArithmeticOp::Div => todo!(),
+                    },
+                    (TempLoc::Mem(left), TempLoc::Mem(right)) => {
+                        match regmap.get_any_free_register() {
+                            Some(reg) => {
+                                assembler.mov_reg_from_mem(reg, Register::RBP, left);
+                                match op {
+                                    ArithmeticOp::Add => {
+                                        assembler.add_mem(reg, Register::RBP, right);
+                                        temp_locations[*lhs] = TempLoc::None;
+                                        temp_locations[*rhs] = TempLoc::None;
+                                        temp_locations[*result] = TempLoc::Reg(reg);
+                                    }
+                                    ArithmeticOp::Sub => todo!(),
+                                    ArithmeticOp::Mul => todo!(),
+                                    ArithmeticOp::Div => todo!(),
+                                }
+                            }
+                            None => todo!(),
+                        }
+                    }
+                    (TempLoc::None, loc) => unreachable!("{} {} {:?}", lhs, rhs, loc),
+                    (loc, TempLoc::None) => unreachable!("{} {} {:?}", lhs, rhs, loc),
+                },
                 Instruction::ArithmeticFloat {
                     op,
                     lhs,
@@ -129,30 +420,149 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                     rhs,
                     result,
                 } => todo!(),
-                Instruction::LoadInt(_, _) => todo!(),
-                Instruction::LoadFloat(_, _) => todo!(),
-                Instruction::Call(ident, items) => {
-                    assert!(items.is_empty());
-                    //TODO: this only works with extern functions
-                    externs.push((ident.clone(), assembler.data.len() as u64 + 1));
-                    assembler.call();
-                }
-                Instruction::Assign { lhs, rhs } => todo!(),
-                Instruction::Return(value) => match value {
-                    Value::ImmediateInt(val) => {
-                        assembler.stackframe_cleanup();
-                        assembler.mov(Register::RAX, *val);
-                        assembler.ret();
-                    }
+                Instruction::LoadValue(index, val) => match val {
+                    Value::ImmediateInt(val) => match temp_locations[*index] {
+                        TempLoc::Reg(reg) => {
+                            assembler.mov(reg, *val);
+                        }
+                        TempLoc::Mem(offset) => {
+                            if let Ok(val) = (*val).try_into() {
+                                assembler.move_to_mem_sign_extend(Register::RBP, offset, val);
+                            } else {
+                                todo!();
+                            }
+                        }
+                        TempLoc::None => match regmap.get_any_free_register() {
+                            Some(reg) => {
+                                regmap.insert(reg, *index);
+                                temp_locations[*index] = TempLoc::Reg(reg);
+                                assembler.mov(reg, *val);
+                            }
+                            None => {
+                                if let Ok(val) = (*val).try_into() {
+                                    stack_size += 8;
+                                    assembler.move_to_mem_sign_extend(
+                                        Register::RBP,
+                                        -stack_size,
+                                        val,
+                                    );
+                                } else {
+                                    todo!();
+                                }
+                            }
+                        },
+                    },
                     Value::ImmediateFloat(_) => todo!(),
                     Value::ImmediateString(_) => todo!(),
                     Value::StructLiteral(values) => todo!(),
-                    Value::ArrayAccess { var, index } => todo!(),
+                    Value::ArrayAccess {
+                        var_index,
+                        array_index,
+                    } => match &function.scope.vars[*var_index].data_type {
+                        DataType::I64 => {
+                            assert!(matches!(&**array_index, Value::ImmediateInt(0)));
+                            temp_locations[*index] = TempLoc::Mem(var_locations[*var_index]);
+                        }
+                        DataType::Char => todo!(),
+                        DataType::Array { data_type, size } => todo!(),
+                        DataType::Pointer(data_type) => todo!(),
+                        DataType::Boolean => todo!(),
+                        DataType::Void => todo!(),
+                        DataType::F32 => todo!(),
+                        DataType::Struct(identifier_spanned) => todo!(),
+                    },
                     Value::MemberAccess => todo!(),
                     Value::Temporary(_) => todo!(),
                     Value::Call(_, values) => todo!(),
+                    Value::Variable(_) => todo!(),
                 },
+                Instruction::Call(ident, items) => {
+                    call_function(
+                        ir,
+                        ident,
+                        items,
+                        &mut assembler,
+                        &mut externs,
+                        &mut temp_locations,
+                        &mut var_locations,
+                        &mut regmap,
+                        &mut stack_size,
+                    );
+                }
+                Instruction::AssignTemp { lhs, rhs } => {
+                    match (temp_locations[*lhs], temp_locations[*rhs]) {
+                        (TempLoc::Reg(left), TempLoc::Reg(right)) => {
+                            assembler.mov_reg(left, right);
+                        }
+                        (TempLoc::None, TempLoc::Reg(right)) => {
+                            match regmap.get_any_free_register() {
+                                Some(left) => {
+                                    regmap.insert(left, *lhs);
+                                    assembler.mov_reg(left, right);
+                                }
+                                None => todo!(),
+                            }
+                        }
+                        (TempLoc::Reg(left), TempLoc::Mem(right)) => {
+                            assembler.mov_reg_from_mem(left, Register::RBP, right);
+                        }
+                        (TempLoc::Mem(_), TempLoc::Reg(right)) => todo!(),
+                        (TempLoc::Mem(_), TempLoc::Mem(_)) => todo!(),
+                        (TempLoc::None, TempLoc::Mem(_)) => todo!(),
+                        (_, TempLoc::None) => unreachable!(),
+                    }
+                }
+                Instruction::Return(value) => {
+                    match value {
+                        Value::ImmediateInt(val) => {
+                            assembler.mov(Register::RAX, *val);
+                        }
+                        Value::ImmediateFloat(_) => todo!(),
+                        Value::ImmediateString(_) => todo!(),
+                        Value::StructLiteral(values) => todo!(),
+                        Value::ArrayAccess {
+                            var_index,
+                            array_index,
+                        } => todo!(),
+                        Value::MemberAccess => todo!(),
+                        Value::Temporary(index) => match temp_locations[*index] {
+                            TempLoc::Reg(reg) => {
+                                if reg != Register::RAX {
+                                    assembler.mov_reg(Register::RAX, reg);
+                                }
+                            }
+                            TempLoc::Mem(_) => todo!(),
+                            TempLoc::None => unreachable!(),
+                        },
+                        Value::Call(_, values) => todo!(),
+                        Value::Variable(_) => todo!(),
+                    }
+
+                    assembler.stackframe_cleanup();
+                    assembler.ret();
+                }
+                Instruction::AssignVar { var, temp } => {
+                    let to = var_locations[*var];
+                    match temp_locations[*temp] {
+                        TempLoc::Reg(from) => {
+                            assembler.mov_to_mem(from, Register::RBP, to);
+                        }
+                        TempLoc::Mem(from) => match regmap.get_any_free_register() {
+                            Some(reg) => {
+                                assembler.mov_reg_from_mem(reg, Register::RBP, from);
+                                assembler.mov_to_mem(reg, Register::RBP, to);
+                            }
+                            None => todo!(),
+                        },
+                        TempLoc::None => unreachable!(),
+                    }
+                }
             }
+        }
+        if let Ok(stack_size) = stack_size.try_into() {
+            assembler.data[stack_size_patch_offset] = stack_size;
+        } else {
+            todo!();
         }
     }
 
@@ -291,4 +701,127 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
     let mut buffer = StreamingBuffer::new(file);
     builder.write(&mut buffer).unwrap();
     buffer.result().unwrap()
+}
+
+fn call_function(
+    ir: &IRGen,
+    ident: &str,
+    items: &[Value],
+    assembler: &mut Assembler,
+    externs: &mut Vec<(String, u64)>,
+    temp_locations: &mut Vec<TempLoc>,
+    var_locations: &mut Vec<i32>,
+    regmap: &mut RegMap,
+    stack_size: &mut i32,
+) {
+    let func = ir.parser.get_function(ident).unwrap();
+    let mut classes: Vec<ArgumentClass> = func
+        .arguments
+        .iter()
+        .map(|(_, arg)| classify(ir, arg))
+        .collect();
+    // assert!(items.is_empty());
+    //TODO: this only works with extern functions
+    externs.push((ident.to_string(), assembler.data.len() as u64 + 1));
+    assembler.call();
+}
+
+fn classify(ir: &IRGen, arg: &DataType) -> ArgumentClass {
+    match arg {
+        DataType::I64 => ArgumentClass::INTEGER,
+        DataType::Char => ArgumentClass::INTEGER,
+        DataType::Array { data_type, size } => todo!(),
+        DataType::Pointer(data_type) => ArgumentClass::INTEGER,
+        DataType::Boolean => ArgumentClass::INTEGER,
+        DataType::Void => unreachable!(),
+        DataType::F32 => ArgumentClass::SSE,
+        DataType::Struct(ident) => {
+            let size = sizeof(arg);
+            let struct_dec = ir
+                .parser
+                .struct_declarations
+                .iter()
+                .find(|dec| dec.ident.ident == ident.ident)
+                .unwrap();
+            // If the size of an object is larger than eight eightbytes, or it contains unaligned fields, it has class MEMORY.
+            if size == 0 {
+                ArgumentClass::NO_CLASS
+            } else if size > 8 * 8 {
+                ArgumentClass::MEMORY
+            } else {
+                // If the size of the aggregate exceeds a single eightbyte, each is classified separately.
+                let mut classes = Vec::new();
+                let mut size = 0;
+                let mut members = struct_dec.members.iter();
+                while let Some(member) = members.next() {
+                    // Each field of an object is classified recursively so that always two fields are con-
+                    // sidered. The resulting class is calculated according to the classes of the fields in the
+                    // eightbyte
+                    let mut left_class = classify(ir, &member.data_type);
+                    size = sizeof(&member.data_type);
+                    if size >= 8 {
+                        classes.push(left_class);
+                        continue;
+                    }
+
+                    if let Some(right) = members.next() {
+                        let right_class = classify(ir, &right.data_type);
+                        if left_class == right_class {
+                        } else if left_class == ArgumentClass::NO_CLASS {
+                            left_class = right_class;
+                        } else if right_class == ArgumentClass::NO_CLASS {
+                        } else if left_class == ArgumentClass::MEMORY
+                            || right_class == ArgumentClass::MEMORY
+                        {
+                            left_class = ArgumentClass::MEMORY;
+                        } else if left_class == ArgumentClass::INTEGER
+                            || right_class == ArgumentClass::INTEGER
+                        {
+                            left_class = ArgumentClass::INTEGER;
+                        } else if left_class == ArgumentClass::X87
+                            || left_class == ArgumentClass::X87UP
+                            || left_class == ArgumentClass::COMPLEX_X87
+                            || right_class == ArgumentClass::X87
+                            || right_class == ArgumentClass::X87UP
+                            || right_class == ArgumentClass::COMPLEX_X87
+                        {
+                            left_class = ArgumentClass::MEMORY;
+                        } else {
+                            left_class = ArgumentClass::SSE;
+                        }
+                    } else {
+                        classes.push(left_class);
+                    }
+                }
+                ArgumentClass::STRUCT(classes)
+            }
+        }
+    }
+}
+
+/// According to the System V Application Binary Interface 3.2.3 Parameter Passing
+#[derive(Clone, PartialEq, Eq)]
+enum ArgumentClass {
+    INTEGER, // This class consists of integral types that fit into one of the general purpose registers.
+    SSE,     // The class consists of types that fit into a vector register.
+    SSEUP, // The class consists of types that fit into a vector register and can be passed and returned in the upper bytes of it.
+    X87,
+    X87UP,       // These classes consists of types that will be returned via the x87 FPU.
+    COMPLEX_X87, // This class consists of types that will be returned via the x87 FPU.
+    NO_CLASS, // This class is used as initializer in the algorithms. It will be used for padding and empty structures and unions.
+    MEMORY, // This class consists of types that will be passed and returned in memory via the stack.
+    STRUCT(Vec<ArgumentClass>), // Utility
+}
+
+fn sizeof(data_type: &DataType) -> i32 {
+    match data_type {
+        DataType::I64 => 8,
+        DataType::Char => todo!(),
+        DataType::Array { data_type, size } => todo!(),
+        DataType::Pointer(data_type) => todo!(),
+        DataType::Boolean => todo!(),
+        DataType::Void => todo!(),
+        DataType::F32 => todo!(),
+        DataType::Struct(identifier_spanned) => todo!(),
+    }
 }

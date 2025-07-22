@@ -1,4 +1,5 @@
 fn mytest();
+fn print_num(a: i64);
 
 struct grzybex {
     a: i64,
@@ -6,6 +7,8 @@ struct grzybex {
 }
 
 public fn main() -> i64 {
-    mytest();
-    return 0;
+    let a: i64 = 15;
+    let b: i64 = a + 3;
+    print_num(a);
+    return b + 1;
 }

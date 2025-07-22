@@ -14,3 +14,7 @@ void other(struct mystruct* arg) {
 void mytest() {
     printf("hello\n");
 }
+
+void print_num(long long a) {
+    printf("num: %lli \n", a);
+}

@@ -4,7 +4,6 @@ use std::fs;
 
 mod tokenizer;
 use ir::IRGen;
-use itertools::Itertools;
 use tokenizer::*;
 
 mod parser;
@@ -26,7 +25,7 @@ fn main() {
 
     let contents =
         fs::read_to_string(read_file_path).expect("Should have been able to read the file.");
-    let lines = contents.lines().collect_vec();
+    let lines: Vec<&str> = contents.lines().collect();
 
     let tokens = tokenize(&contents);
     if print_errors(&tokens.errors, &lines, &read_file_path) {
@@ -43,6 +42,10 @@ fn main() {
 
     if print_errors(&irgen.errors, &lines, read_file_path) {
         return;
+    }
+
+    for function in &irgen.functions {
+        print!("{}", function);
     }
 
     compile::compile_elf_object(&irgen, write_file_path);

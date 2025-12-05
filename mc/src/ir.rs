@@ -418,12 +418,16 @@ impl<'a> IRGen<'a> {
                     .rev()
                     .find(|(_, var)| var.ident == ident.ident)
                 {
+                    // Some((
+                    //     Value::ArrayAccess {
+                    //         var_index,
+                    //         array_index: Box::new(Value::ImmediateInt(0)),
+                    //     },
+                    //     var.data_type.clone(),
+                    // )) TODO?
                     Some((
-                        Value::ArrayAccess {
-                            var_index,
-                            array_index: Box::new(Value::ImmediateInt(0)),
-                        },
-                        var.data_type.clone(),
+                        Value::Variable(var_index),
+                        var.data_type.clone()
                     ))
                 } else {
                     self.errors.push(Error {

@@ -333,7 +333,7 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
             if var.argument {
                 todo!();
             } else {
-                stack_size += sizeof(&var.data_type);
+                stack_size += sizeof(&var.data_type) as i32;
                 var_locations[var_index] = -stack_size;
             }
         }
@@ -703,6 +703,15 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
     buffer.result().unwrap()
 }
 
+const ARG_REGS: [Register; 6] = [
+    Register::R9,
+    Register::R8,
+    Register::RCX,
+    Register::RDX,
+    Register::RSI,
+    Register::RDI,
+];
+
 fn call_function(
     ir: &IRGen,
     ident: &str,
@@ -715,17 +724,61 @@ fn call_function(
     stack_size: &mut i32,
 ) {
     let func = ir.parser.get_function(ident).unwrap();
-    let mut classes: Vec<ArgumentClass> = func
+    let classes: Vec<ArgumentClass> = func
         .arguments
         .iter()
         .map(|(_, arg)| classify(ir, arg))
         .collect();
-    // assert!(items.is_empty());
+    // Once arguments are classified, the registers get assigned (in left-to-right order) for passing as follows
+    let mut arg_regs = Vec::from(ARG_REGS);
+    for (i, class) in classes.iter().enumerate() {
+        let arg = &items[i];
+        match class {
+            // 1. If the class is MEMORY, pass the argument on the stack at an address respecting the
+            // arguments alignment (which might be more than its natural alignement).
+            ArgumentClass::MEMORY => todo!(),
+            // 2. If the class is INTEGER, the next available register of the sequence %rdi, %rsi, %rdx,
+            // %rcx, %r8 and %r9 is used
+            ArgumentClass::INTEGER => match arg {
+                Value::ImmediateInt(_) => todo!(),
+                Value::ImmediateFloat(_) => todo!(),
+                Value::ImmediateString(_) => todo!(),
+                Value::StructLiteral(values) => todo!(),
+                Value::ArrayAccess {
+                    var_index,
+                    array_index,
+                } => todo!(),
+                Value::Variable(var) => {
+                    let loc = var_locations[*var];
+                    let reg = arg_regs.pop().unwrap(); //TODO: put them on stack if no
+                                                                 //available regs
+                    regmap.free_register(assembler, reg, &ARG_REGS, stack_size, temp_locations);
+                    assembler.mov_reg_from_mem(reg, Register::RBP, loc);
+                }
+                Value::MemberAccess => todo!(),
+                Value::Temporary(_) => todo!(),
+                Value::Call(_, values) => todo!(),
+            },
+            // 3. If the class is SSE, the next available vector register is used, the registers are taken
+            // in the order from %xmm0 to %xmm7.
+            ArgumentClass::SSE => todo!(),
+            // 4. If the class is SSEUP, the eightbyte is passed in the next available eightbyte chunk
+            // of the last used vector register.
+            ArgumentClass::SSEUP => todo!(),
+            // 5. If the class is X87, X87UP or COMPLEX_X87, it is passed in memory.
+            ArgumentClass::X87 => todo!(),
+            ArgumentClass::X87UP => todo!(),
+            ArgumentClass::COMPLEX_X87 => todo!(),
+            ArgumentClass::NO_CLASS => unreachable!(),
+            ArgumentClass::STRUCT(items) => todo!(),
+        }
+    }
     //TODO: this only works with extern functions
     externs.push((ident.to_string(), assembler.data.len() as u64 + 1));
     assembler.call();
 }
 
+// I'm 100% sure I'm doing this wrong
 fn classify(ir: &IRGen, arg: &DataType) -> ArgumentClass {
     match arg {
         DataType::I64 => ArgumentClass::INTEGER,
@@ -751,46 +804,95 @@ fn classify(ir: &IRGen, arg: &DataType) -> ArgumentClass {
             } else {
                 // If the size of the aggregate exceeds a single eightbyte, each is classified separately.
                 let mut classes = Vec::new();
-                let mut size = 0;
+                let mut member_size;
                 let mut members = struct_dec.members.iter();
                 while let Some(member) = members.next() {
                     // Each field of an object is classified recursively so that always two fields are con-
                     // sidered. The resulting class is calculated according to the classes of the fields in the
                     // eightbyte
                     let mut left_class = classify(ir, &member.data_type);
-                    size = sizeof(&member.data_type);
-                    if size >= 8 {
+                    member_size = sizeof(&member.data_type);
+                    if member_size >= 8 {
                         classes.push(left_class);
                         continue;
                     }
 
-                    if let Some(right) = members.next() {
-                        let right_class = classify(ir, &right.data_type);
-                        if left_class == right_class {
-                        } else if left_class == ArgumentClass::NO_CLASS {
-                            left_class = right_class;
-                        } else if right_class == ArgumentClass::NO_CLASS {
-                        } else if left_class == ArgumentClass::MEMORY
-                            || right_class == ArgumentClass::MEMORY
-                        {
-                            left_class = ArgumentClass::MEMORY;
-                        } else if left_class == ArgumentClass::INTEGER
-                            || right_class == ArgumentClass::INTEGER
-                        {
-                            left_class = ArgumentClass::INTEGER;
-                        } else if left_class == ArgumentClass::X87
-                            || left_class == ArgumentClass::X87UP
-                            || left_class == ArgumentClass::COMPLEX_X87
-                            || right_class == ArgumentClass::X87
-                            || right_class == ArgumentClass::X87UP
-                            || right_class == ArgumentClass::COMPLEX_X87
-                        {
-                            left_class = ArgumentClass::MEMORY;
+                    let mut class_size = member_size;
+                    while class_size < 8 {
+                        left_class = if let Some(right) = members.next() {
+                            class_size += sizeof(&right.data_type);
+                            let right_class = classify(ir, &right.data_type);
+                            if left_class == right_class {
+                                left_class // (a) If both classes are equal, this is the resulting class.
+                            } else if left_class == ArgumentClass::NO_CLASS {
+                                right_class // (b) If one of the classes is NO_CLASS, the resulting class is the other class.
+                            } else if right_class == ArgumentClass::NO_CLASS {
+                                left_class
+                            } else if left_class == ArgumentClass::MEMORY
+                                || right_class == ArgumentClass::MEMORY
+                            {
+                                ArgumentClass::MEMORY // (c) If one of the classes is MEMORY, the result is the MEMORY class.
+                            } else if left_class == ArgumentClass::INTEGER
+                                || right_class == ArgumentClass::INTEGER
+                            {
+                                ArgumentClass::INTEGER // (d) If one of the classes is INTEGER, the result is the INTEGER.
+                            } else if left_class == ArgumentClass::X87
+                                || left_class == ArgumentClass::X87UP
+                                || left_class == ArgumentClass::COMPLEX_X87
+                                || right_class == ArgumentClass::X87
+                                || right_class == ArgumentClass::X87UP
+                                || right_class == ArgumentClass::COMPLEX_X87
+                            {
+                                ArgumentClass::MEMORY // (e) If one of the classes is X87, X87UP, COMPLEX_X87 class, MEMORY is used as class.
+                            } else {
+                                ArgumentClass::SSE // (f) Otherwise class SSE is used.
+                            }
                         } else {
-                            left_class = ArgumentClass::SSE;
-                        }
-                    } else {
-                        classes.push(left_class);
+                            left_class
+                        };
+                    }
+                    classes.push(left_class);
+                }
+
+                assert!((size + 7) / 8 == classes.len()); // idk anymore
+
+                // 5. Then a post merger cleanup is done:
+                for class in &classes {
+                    // (a) If one of the classes is MEMORY, the whole argument is passed in memory.
+                    if *class == ArgumentClass::MEMORY {
+                        return ArgumentClass::MEMORY;
+                    }
+                }
+                // (b) If X87UP is not preceded by X87, the whole argument is passed in memory.
+                for a in classes.windows(2) {
+                    if a[1] == ArgumentClass::X87UP && a[0] != ArgumentClass::X87 {
+                        return ArgumentClass::MEMORY;
+                    }
+                }
+                if classes.len() == 1 && *classes.first().unwrap() == ArgumentClass::X87UP {
+                    return ArgumentClass::MEMORY;
+                }
+                // (c) If the size of the aggregate exceeds two eightbytes and the first eightbyte isn’t
+                // SSE or any other eightbyte isn’t SSEUP, the whole argument is passed in mem-
+                // ory.
+                if size > 2 * 8 {
+                    let mut iter = classes.iter();
+                    if *iter.next().unwrap() != ArgumentClass::SSE
+                        || iter.any(|c| *c != ArgumentClass::SSEUP)
+                    {
+                        return ArgumentClass::MEMORY;
+                    }
+                }
+                // (d) If SSEUP is not preceded by SSE or SSEUP, it is converted to SSE.
+                let mut iter = classes.iter_mut().rev().peekable();
+                while let Some(a) = iter.next() {
+                    let p = iter.peek();
+                    if *a == ArgumentClass::SSEUP
+                        && p.is_none_or(|p| {
+                            **p != ArgumentClass::SSE && **p != ArgumentClass::SSEUP
+                        })
+                    {
+                        *a = ArgumentClass::SSE;
                     }
                 }
                 ArgumentClass::STRUCT(classes)
@@ -813,7 +915,7 @@ enum ArgumentClass {
     STRUCT(Vec<ArgumentClass>), // Utility
 }
 
-fn sizeof(data_type: &DataType) -> i32 {
+fn sizeof(data_type: &DataType) -> usize {
     match data_type {
         DataType::I64 => 8,
         DataType::Char => todo!(),

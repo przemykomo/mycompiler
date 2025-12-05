@@ -1,3 +1,5 @@
+use crate::compile::{Assembler, TempLoc};
+
 use super::Register;
 
 #[derive(Debug, Clone)]
@@ -49,6 +51,35 @@ impl RegMap {
         }
         return None;
     }
+
+    pub fn free_register(
+        &mut self,
+        asm: &mut Assembler,
+        target_reg: Register,
+        protected_registers: &[Register],
+        stack_size: &mut i32,
+        temp_locations: &mut Vec<TempLoc>,
+    ) {
+        if !self.contains_key(&target_reg) {
+            return;
+        };
+        for free_reg in USED_REGISTERS {
+            if !protected_registers.contains(&free_reg) && !self.contains_key(&free_reg) {
+                asm.mov_reg(free_reg, target_reg);
+                if let Some(temp) = self.remove(&target_reg) {
+                    self.insert(free_reg, temp);
+                }
+                return;
+            }
+        }
+        let Some(temp) = self.remove(&target_reg) else {
+            unreachable!()
+        };
+
+        *stack_size += 8;
+        asm.mov_to_mem(target_reg, Register::RBP, -*stack_size);
+        temp_locations[temp] = TempLoc::Mem(-*stack_size);
+    }
 }
 
 const USED_REGISTERS: [Register; 14] = {
@@ -93,36 +124,4 @@ fn force_get_any_free_register(
     }
 }
 
-fn free_register(state: &mut ScopeState, target_reg: Register, protected_registers: &[Register]) {
-    if !state.used_registers.contains_key(&target_reg) {
-        return;
-    };
-    for free_reg in USED_REGISTERS {
-        if !protected_registers.contains(&free_reg) && !state.used_registers.contains_key(&free_reg)
-        {
-            state.asm.mov(free_reg, target_reg, Word::QWORD);
-            if let Some(temp) = state.used_registers.remove(&target_reg) {
-                *temp.borrow_mut() = TempVariable::Register(free_reg);
-                state.used_registers.insert(free_reg, temp);
-            }
-            return;
-        }
-    }
-    let Some(temp) = state.used_registers.remove(&target_reg) else {
-        unreachable!()
-    };
-    let TempVariable::Register(reg) = temp.borrow().clone() else {
-        unreachable!()
-    };
-    state.stack_size_current += 8;
-    state.asm.mov(
-        RegPointer {
-            reg: RBP,
-            offset: -state.stack_size_current,
-        },
-        reg,
-        Word::QWORD,
-    );
-    state.used_registers.remove(&reg);
-    *temp.borrow_mut() = TempVariable::Stack(state.stack_size_current);
-} */
+*/

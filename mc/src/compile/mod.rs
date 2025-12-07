@@ -474,7 +474,20 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                     Value::MemberAccess => todo!(),
                     Value::Temporary(_) => todo!(),
                     Value::Call(_, values) => todo!(),
-                    Value::Variable(_) => todo!(),
+                    Value::Variable(var_index) => {
+                        match &function.scope.vars[*var_index].data_type {
+                            DataType::I64 => {
+                                temp_locations[*index] = TempLoc::Mem(var_locations[*var_index]);
+                            }
+                            DataType::Char => todo!(),
+                            DataType::Array { data_type, size } => todo!(),
+                            DataType::Pointer(data_type) => todo!(),
+                            DataType::Boolean => todo!(),
+                            DataType::Void => todo!(),
+                            DataType::F32 => todo!(),
+                            DataType::Struct(identifier_spanned) => todo!(),
+                        }
+                    }
                 },
                 Instruction::Call(ident, items) => {
                     call_function(
@@ -712,6 +725,18 @@ const ARG_REGS: [Register; 6] = [
     Register::RDI,
 ];
 
+const SCRATCH_REGS: [Register; 9] = [
+    Register::RAX,
+    Register::RDI,
+    Register::RSI,
+    Register::RDX,
+    Register::RCX,
+    Register::R8,
+    Register::R9,
+    Register::R10,
+    Register::R11,
+];
+
 fn call_function(
     ir: &IRGen,
     ident: &str,
@@ -731,6 +756,7 @@ fn call_function(
         .collect();
     // Once arguments are classified, the registers get assigned (in left-to-right order) for passing as follows
     let mut arg_regs = Vec::from(ARG_REGS);
+    let mut used_arg_regs = Vec::new();
     for (i, class) in classes.iter().enumerate() {
         let arg = &items[i];
         match class {
@@ -750,10 +776,11 @@ fn call_function(
                 } => todo!(),
                 Value::Variable(var) => {
                     let loc = var_locations[*var];
-                    let reg = arg_regs.pop().unwrap(); //TODO: put them on stack if no
-                                                                 //available regs
+                    let reg = arg_regs.pop().unwrap();
+                    //TODO: put them on stack if no available regs
                     regmap.free_register(assembler, reg, &ARG_REGS, stack_size, temp_locations);
                     assembler.mov_reg_from_mem(reg, Register::RBP, loc);
+                    used_arg_regs.push(reg);
                 }
                 Value::MemberAccess => todo!(),
                 Value::Temporary(_) => todo!(),
@@ -773,6 +800,14 @@ fn call_function(
             ArgumentClass::STRUCT(items) => todo!(),
         }
     }
+
+    //TODO: Won't work if some arguments get passed on the stack. Can I fix this without 2 passes?
+    for reg in SCRATCH_REGS {
+        if !used_arg_regs.contains(&reg) {
+            regmap.free_register(assembler, reg, &SCRATCH_REGS, stack_size, temp_locations);
+        }
+    }
+
     //TODO: this only works with extern functions
     externs.push((ident.to_string(), assembler.data.len() as u64 + 1));
     assembler.call();

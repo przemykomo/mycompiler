@@ -5,16 +5,16 @@ struct mystruct {
     int64_t b;
 };
 
-void other(struct mystruct* arg) {
+void other(struct mystruct *arg) {
     printf("a = %ld, b = %ld\n", arg->a, arg->b);
 
     // struct mystruct a = {.a = 5, .b = 3};
 }
 
-void mytest() {
-    printf("hello\n");
-}
+void mytest() { printf("hello\n"); }
 
-void print_num(long long a) {
-    printf("num: %lli \n", a);
+void print_num(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e,
+               int64_t f) {
+    printf("a: %li, b: %li, c: %li, d: %li, e: %li, f: %li \n", a, b, c, d, e,
+           f);
 }

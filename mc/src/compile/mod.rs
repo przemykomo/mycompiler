@@ -473,7 +473,19 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                     },
                     Value::MemberAccess => todo!(),
                     Value::Temporary(_) => todo!(),
-                    Value::Call(_, values) => todo!(),
+                    // Value::Call(ident, items) => {
+                    //     call_function(
+                    //         ir,
+                    //         ident,
+                    //         items,
+                    //         &mut assembler,
+                    //         &mut externs,
+                    //         &mut temp_locations,
+                    //         &mut var_locations,
+                    //         &mut regmap,
+                    //         &mut stack_size,
+                    //     );
+                    // }
                     Value::Variable(var_index) => {
                         match &function.scope.vars[*var_index].data_type {
                             DataType::I64 => {
@@ -489,11 +501,15 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                         }
                     }
                 },
-                Instruction::Call(ident, items) => {
-                    call_function(
+                Instruction::Call {
+                    ident,
+                    values,
+                    result,
+                } => {
+                    let loc = call_function(
                         ir,
                         ident,
-                        items,
+                        values,
                         &mut assembler,
                         &mut externs,
                         &mut temp_locations,
@@ -501,6 +517,8 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                         &mut regmap,
                         &mut stack_size,
                     );
+
+                    temp_locations[*result] = loc;
                 }
                 Instruction::AssignTemp { lhs, rhs } => {
                     match (temp_locations[*lhs], temp_locations[*rhs]) {
@@ -547,7 +565,7 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                             TempLoc::Mem(_) => todo!(),
                             TempLoc::None => unreachable!(),
                         },
-                        Value::Call(_, values) => todo!(),
+                        // Value::Call(_, values) => todo!(),
                         Value::Variable(_) => todo!(),
                     }
 
@@ -740,14 +758,14 @@ const SCRATCH_REGS: [Register; 9] = [
 fn call_function(
     ir: &IRGen,
     ident: &str,
-    items: &[Value],
+    values: &[Value],
     assembler: &mut Assembler,
     externs: &mut Vec<(String, u64)>,
     temp_locations: &mut Vec<TempLoc>,
     var_locations: &mut Vec<i32>,
     regmap: &mut RegMap,
     stack_size: &mut i32,
-) {
+) -> TempLoc {
     let func = ir.parser.get_function(ident).unwrap();
     let classes: Vec<ArgumentClass> = func
         .arguments
@@ -758,7 +776,7 @@ fn call_function(
     let mut arg_regs = Vec::from(ARG_REGS);
     let mut used_arg_regs = Vec::new();
     for (i, class) in classes.iter().enumerate() {
-        let arg = &items[i];
+        let arg = &values[i];
         match class {
             // 1. If the class is MEMORY, pass the argument on the stack at an address respecting the
             // arguments alignment (which might be more than its natural alignement).
@@ -784,7 +802,7 @@ fn call_function(
                 }
                 Value::MemberAccess => todo!(),
                 Value::Temporary(_) => todo!(),
-                Value::Call(_, values) => todo!(),
+                // Value::Call(_, values) => todo!(),
             },
             // 3. If the class is SSE, the next available vector register is used, the registers are taken
             // in the order from %xmm0 to %xmm7.
@@ -811,6 +829,19 @@ fn call_function(
     //TODO: this only works with extern functions
     externs.push((ident.to_string(), assembler.data.len() as u64 + 1));
     assembler.call();
+
+    let class = classify(ir, &func.return_type);
+    match class {
+        ArgumentClass::INTEGER => TempLoc::Reg(Register::RAX),
+        ArgumentClass::SSE => todo!(),
+        ArgumentClass::SSEUP => todo!(),
+        ArgumentClass::X87 => todo!(),
+        ArgumentClass::X87UP => todo!(),
+        ArgumentClass::COMPLEX_X87 => todo!(),
+        ArgumentClass::NO_CLASS => TempLoc::None,
+        ArgumentClass::MEMORY => todo!(),
+        ArgumentClass::STRUCT(items) => todo!(),
+    }
 }
 
 // I'm 100% sure I'm doing this wrong
@@ -821,7 +852,7 @@ fn classify(ir: &IRGen, arg: &DataType) -> ArgumentClass {
         DataType::Array { data_type, size } => todo!(),
         DataType::Pointer(data_type) => ArgumentClass::INTEGER,
         DataType::Boolean => ArgumentClass::INTEGER,
-        DataType::Void => unreachable!(),
+        DataType::Void => ArgumentClass::NO_CLASS,
         DataType::F32 => ArgumentClass::SSE,
         DataType::Struct(ident) => {
             let size = sizeof(arg);

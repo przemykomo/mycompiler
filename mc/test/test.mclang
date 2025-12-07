@@ -1,4 +1,5 @@
 fn mytest();
+fn add(a: i64, b: i64) -> i64;
 fn print_num(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64);
 
 struct grzybex {
@@ -12,7 +13,7 @@ public fn main() -> i64 {
     let c: i64 = b + 1;
     let d: i64 = c + 1;
     let e: i64 = d + 1;
-    let f: i64 = e + 1;
+    let f: i64 = add(a, b);
     print_num(a, b, c, d, e, f);
     return 0;
 }

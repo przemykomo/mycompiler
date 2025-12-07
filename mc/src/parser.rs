@@ -12,7 +12,7 @@ pub struct Parser<'a> {
 }
 
 impl Parser<'_> {
-    pub fn new(tokenized_file: &TokenizedFile) -> Parser {
+    pub fn new(tokenized_file: &TokenizedFile) -> Parser<'_> {
         Parser {
             tokens: &tokenized_file.tokens, // must end with an EOF token
             index: 0,

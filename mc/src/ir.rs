@@ -41,7 +41,7 @@ pub enum Value {
     Variable(usize),
     MemberAccess,
     Temporary(usize),
-    Call(String, Vec<Value>),
+    // Call(String, Vec<Value>),
 }
 
 #[derive(Debug)]
@@ -116,7 +116,7 @@ impl<'a> Scope {
             } => self.temp(IRType::I64),
             Value::MemberAccess => self.temp(IRType::I64),
             Value::Temporary(temp_var) => return *temp_var,
-            Value::Call(_, values) => self.temp(IRType::I64),
+            // Value::Call(_, values) => self.temp(IRType::I64),
             Value::Variable(_) => self.temp(IRType::I64),
         };
         self.instructions.push(Instruction::LoadValue(temp, val));
@@ -147,7 +147,11 @@ pub enum Instruction {
     LoadValue(usize, Value),
     // LoadInt(usize, i64),
     // LoadFloat(usize, f32),
-    Call(String, Vec<Value>),
+    Call {
+        ident: String,
+        values: Vec<Value>,
+        result: usize,
+    },
     AssignTemp {
         lhs: usize,
         rhs: usize,
@@ -225,15 +229,7 @@ impl<'a> IRGen<'a> {
                 }
             }
             Statement::Expression(expr) => {
-                if let Some((Value::Call(ident, items), _)) = self.compile_expression(expr, scope) {
-                    let instruction = Instruction::Call(
-                        ident,
-                        items, // .into_iter()
-                              // .map(|val| scope.move_to_temp(val))
-                              // .collect(),
-                    );
-                    scope.instructions.push(instruction);
-                }
+                self.compile_expression(expr, scope);
             }
             Statement::While { expression, scope } => todo!(),
             Statement::For {
@@ -405,10 +401,14 @@ impl<'a> IRGen<'a> {
                     return None;
                 }
 
-                Some((
-                    Value::Call(call.ident.ident.clone(), values),
-                    func.return_type.clone(),
-                ))
+                let result = scope.temp(IRType::I64);
+                scope.instructions.push(Instruction::Call {
+                    ident: call.ident.ident.clone(),
+                    values,
+                    result: result,
+                });
+
+                Some((Value::Temporary(result), func.return_type.clone()))
             }
             Expression::Identifier(ident) => {
                 if let Some((var_index, var)) = scope
@@ -425,10 +425,7 @@ impl<'a> IRGen<'a> {
                     //     },
                     //     var.data_type.clone(),
                     // )) TODO?
-                    Some((
-                        Value::Variable(var_index),
-                        var.data_type.clone()
-                    ))
+                    Some((Value::Variable(var_index), var.data_type.clone()))
                 } else {
                     self.errors.push(Error {
                         span: ident.span,

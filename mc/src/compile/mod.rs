@@ -14,7 +14,7 @@ use object::{
 };
 
 use crate::{
-    ast::ArithmeticOp,
+    ast::{ArithmeticOp, BoolOp},
     ir::{IRGen, Instruction, Value},
     tokenizer::DataType,
 };
@@ -97,7 +97,7 @@ impl Assembler {
     pub fn stackframe_setup(&mut self) -> usize {
         self.push(Register::RBP);
         self.mov_reg(Register::RBP, Register::RSP);
-        self.sub(Register::RSP, 0);
+        self.sub_imm(Register::RSP, 0);
         return self.data.len() - 1;
     }
 
@@ -163,7 +163,7 @@ impl Assembler {
         self.data.extend_from_slice(val);
     }
 
-    pub fn sub(&mut self, reg: Register, val: u8) {
+    pub fn sub_imm(&mut self, reg: Register, val: u8) {
         if reg < Register::R8 {
             self.data.push(REX_W);
             self.data.push(0x83);
@@ -174,6 +174,14 @@ impl Assembler {
             self.data.push(0xe8 + reg as u8 - 8);
         }
         self.data.push(val);
+    }
+
+    pub fn sub(&mut self, left: Register, right: Register) {
+        todo!();
+    }
+
+    pub fn mul(&mut self, left: Register, right: Register) {
+        todo!();
     }
 
     pub fn add(&mut self, left: Register, right: Register) {
@@ -315,6 +323,48 @@ impl Assembler {
         }
         self.data.extend_from_slice(disp.as_slice());
     }
+
+    fn cmp(&self, left: Register, right: Register) {
+        todo!()
+    }
+
+    fn add_mem_reg(&self, reg: Register, rbp: Register, left: i32) {
+        todo!()
+    }
+
+    fn sub_mem_reg(&self, reg: Register, rbp: Register, left: i32) {
+        todo!()
+    }
+
+    fn mul_mem_reg(&self, reg: Register, rbp: Register, left: i32) {
+        todo!()
+    }
+
+    fn sub_mem(&self, left: Register, rbp: Register, right: i32) {
+        todo!()
+    }
+}
+
+fn reg_mem_op(
+    assembler: &mut Assembler,
+    lhs: &usize,
+    rhs: &usize,
+    result: &usize,
+    left: Register,
+    right: i32,
+    op: &ArithmeticOp,
+    temp_locations: &mut Vec<TempLoc>,
+) {
+    match op {
+        ArithmeticOp::Add => assembler.add_mem(left, Register::RBP, right),
+        ArithmeticOp::Sub => assembler.sub_mem(left, Register::RBP, right),
+        ArithmeticOp::Mul => assembler.imul_mem(left, Register::RBP, right),
+        ArithmeticOp::Div => todo!(),
+    }
+
+    temp_locations[*lhs] = TempLoc::None;
+    temp_locations[*rhs] = TempLoc::None;
+    temp_locations[*result] = TempLoc::Reg(left);
 }
 
 pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
@@ -347,67 +397,15 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                     lhs,
                     rhs,
                     result,
-                } => match (temp_locations[*lhs], temp_locations[*rhs]) {
-                    (TempLoc::Reg(left), TempLoc::Reg(right)) => match op {
-                        ArithmeticOp::Add => {
-                            assembler.add(left, right);
-                            temp_locations[*lhs] = TempLoc::None;
-                            temp_locations[*rhs] = TempLoc::None;
-                            temp_locations[*result] = TempLoc::Reg(left);
-                        }
-                        ArithmeticOp::Sub => todo!(),
-                        ArithmeticOp::Mul => todo!(),
-                        ArithmeticOp::Div => todo!(),
-                    },
-                    (TempLoc::Reg(left), TempLoc::Mem(right)) => match op {
-                        ArithmeticOp::Add => {
-                            assembler.add_mem(left, Register::RBP, right);
-                            temp_locations[*lhs] = TempLoc::None;
-                            temp_locations[*rhs] = TempLoc::None;
-                            temp_locations[*result] = TempLoc::Reg(left);
-                        }
-                        ArithmeticOp::Sub => todo!(),
-                        ArithmeticOp::Mul => {
-                            assembler.imul_mem(left, Register::RBP, right);
-                            temp_locations[*lhs] = TempLoc::None;
-                            temp_locations[*rhs] = TempLoc::None;
-                            temp_locations[*result] = TempLoc::Reg(left);
-                        }
-                        ArithmeticOp::Div => todo!(),
-                    },
-                    (TempLoc::Mem(left), TempLoc::Reg(reg)) => match op {
-                        ArithmeticOp::Add => {
-                            assembler.add_mem(reg, Register::RBP, left);
-                            temp_locations[*lhs] = TempLoc::None;
-                            temp_locations[*rhs] = TempLoc::None;
-                            temp_locations[*result] = TempLoc::Reg(reg);
-                        }
-                        ArithmeticOp::Sub => todo!(),
-                        ArithmeticOp::Mul => todo!(),
-                        ArithmeticOp::Div => todo!(),
-                    },
-                    (TempLoc::Mem(left), TempLoc::Mem(right)) => {
-                        match regmap.get_any_free_register() {
-                            Some(reg) => {
-                                assembler.mov_reg_from_mem(reg, Register::RBP, left);
-                                match op {
-                                    ArithmeticOp::Add => {
-                                        assembler.add_mem(reg, Register::RBP, right);
-                                        temp_locations[*lhs] = TempLoc::None;
-                                        temp_locations[*rhs] = TempLoc::None;
-                                        temp_locations[*result] = TempLoc::Reg(reg);
-                                    }
-                                    ArithmeticOp::Sub => todo!(),
-                                    ArithmeticOp::Mul => todo!(),
-                                    ArithmeticOp::Div => todo!(),
-                                }
-                            }
-                            None => todo!(),
-                        }
-                    }
-                    (TempLoc::None, loc) => unreachable!("{} {} {:?}", lhs, rhs, loc),
-                    (loc, TempLoc::None) => unreachable!("{} {} {:?}", lhs, rhs, loc),
-                },
+                } => arithmetic_int(
+                    &mut assembler,
+                    &mut temp_locations,
+                    &mut regmap,
+                    op,
+                    lhs,
+                    rhs,
+                    result,
+                ),
                 Instruction::ArithmeticFloat {
                     op,
                     lhs,
@@ -419,7 +417,21 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                     lhs,
                     rhs,
                     result,
-                } => todo!(),
+                } => match (temp_locations[*lhs], temp_locations[*rhs]) {
+                    (TempLoc::Reg(left), TempLoc::Reg(right)) => {
+                        assembler.cmp(left, right);
+                        match op {
+                            BoolOp::Equal => todo!(),
+                            BoolOp::Larger => todo!(),
+                            BoolOp::Smaller => todo!(),
+                        }
+                    }
+                    (TempLoc::Reg(left), TempLoc::Mem(right)) => todo!(),
+                    (TempLoc::Mem(left), TempLoc::Reg(right)) => todo!(),
+                    (TempLoc::Mem(left), TempLoc::Mem(right)) => todo!(),
+                    (TempLoc::None, loc) => unreachable!("{} {} {:?}", lhs, rhs, loc),
+                    (loc, TempLoc::None) => unreachable!("{} {} {:?}", lhs, rhs, loc),
+                },
                 Instruction::LoadValue(index, val) => match val {
                     Value::ImmediateInt(val) => match temp_locations[*index] {
                         TempLoc::Reg(reg) => {
@@ -734,6 +746,59 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
     buffer.result().unwrap()
 }
 
+fn arithmetic_int(
+    assembler: &mut Assembler,
+    temp_locations: &mut Vec<TempLoc>,
+    regmap: &mut RegMap,
+    op: &ArithmeticOp,
+    lhs: &usize,
+    rhs: &usize,
+    result: &usize,
+) {
+    match (temp_locations[*lhs], temp_locations[*rhs]) {
+        (TempLoc::Reg(left), TempLoc::Reg(right)) => {
+            match op {
+                ArithmeticOp::Add => assembler.add(left, right),
+                ArithmeticOp::Sub => assembler.sub(left, right),
+                ArithmeticOp::Mul => assembler.mul(left, right),
+                ArithmeticOp::Div => todo!(),
+            }
+
+            temp_locations[*lhs] = TempLoc::None;
+            temp_locations[*rhs] = TempLoc::None;
+            temp_locations[*result] = TempLoc::Reg(left);
+        }
+        (TempLoc::Reg(left), TempLoc::Mem(right)) => {
+            reg_mem_op(assembler, lhs, rhs, result, left, right, op, temp_locations);
+        }
+        (TempLoc::Mem(left), TempLoc::Reg(reg)) => {
+            match op {
+                ArithmeticOp::Add => assembler.add_mem_reg(reg, Register::RBP, left),
+                ArithmeticOp::Sub => assembler.sub_mem_reg(reg, Register::RBP, left),
+                ArithmeticOp::Mul => assembler.mul_mem_reg(reg, Register::RBP, left),
+                ArithmeticOp::Div => todo!(),
+            }
+            temp_locations[*lhs] = TempLoc::None;
+            temp_locations[*rhs] = TempLoc::None;
+            temp_locations[*result] = TempLoc::Mem(left);
+        }
+        (TempLoc::Mem(left), TempLoc::Mem(right)) => {
+            match regmap.get_any_free_register() {
+                //TODO: Force
+                Some(reg) => {
+                    assembler.mov_reg_from_mem(reg, Register::RBP, left);
+                    //TODO: It clears the left temp location, maybe fix that, or just
+                    //disable clearing them altogether?
+                    reg_mem_op(assembler, lhs, rhs, result, reg, right, op, temp_locations);
+                }
+                None => todo!(),
+            }
+        }
+        (TempLoc::None, loc) => unreachable!("{} {} {:?}", lhs, rhs, loc),
+        (loc, TempLoc::None) => unreachable!("{} {} {:?}", lhs, rhs, loc),
+    }
+}
+
 const ARG_REGS: [Register; 6] = [
     Register::R9,
     Register::R8,
@@ -987,7 +1052,7 @@ fn sizeof(data_type: &DataType) -> usize {
         DataType::Char => todo!(),
         DataType::Array { data_type, size } => todo!(),
         DataType::Pointer(data_type) => todo!(),
-        DataType::Boolean => todo!(),
+        DataType::Boolean => 1,
         DataType::Void => todo!(),
         DataType::F32 => todo!(),
         DataType::Struct(identifier_spanned) => todo!(),

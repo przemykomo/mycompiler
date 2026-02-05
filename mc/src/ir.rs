@@ -528,6 +528,7 @@ impl<'a> IRGen<'a> {
                                     rhs,
                                     result,
                                 });
+                                return Some((Value::Temporary(result), DataType::Boolean));
                             }
                             BinaryOp::Assign => {
                                 scope

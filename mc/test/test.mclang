@@ -9,11 +9,6 @@ struct grzybex {
 
 public fn main() -> i64 {
     let a: i64 = 15;
-    let b: i64 = a + 1;
-    let c: i64 = b + 1;
-    let d: i64 = c + 1;
-    let e: i64 = d + 1;
-    let f: i64 = add(a, b);
-    print_num(a, b, c, d, e, f);
+    let b: bool = a > 4;
     return 0;
 }

@@ -97,6 +97,7 @@ pub enum BoolOp {
     Larger,
     Smaller,
 }
+
 impl BoolOp {
     pub fn perform<T: std::cmp::PartialEq + std::cmp::PartialOrd>(&self, lhs: T, rhs: T) -> bool {
         match self {

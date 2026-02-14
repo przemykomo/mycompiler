@@ -1,5 +1,5 @@
 // #![allow(unused)]
-use std::{fs, mem::transmute};
+use std::{fs, intrinsics::unreachable, mem::transmute};
 
 use object::{
     build::{
@@ -26,6 +26,7 @@ pub enum TempLoc {
     Reg(Register),
     Mem(i32),
     None,
+    Flag(BoolOp),
 }
 
 const EXTERN_SYMBOL_ADDEND: i64 = -0x04; // All extern symbol relocations generated using NASM have
@@ -328,19 +329,27 @@ impl Assembler {
         todo!()
     }
 
-    fn add_mem_reg(&self, reg: Register, rbp: Register, left: i32) {
+    fn add_mem_reg(&self, ptr: Register, offset: i32, right: Register) {
         todo!()
     }
 
-    fn sub_mem_reg(&self, reg: Register, rbp: Register, left: i32) {
+    fn sub_mem_reg(&self, ptr: Register, offset: i32, right: Register) {
         todo!()
     }
 
-    fn mul_mem_reg(&self, reg: Register, rbp: Register, left: i32) {
+    fn mul_mem_reg(&self, ptr: Register, offset: i32, right: Register) {
         todo!()
     }
 
-    fn sub_mem(&self, left: Register, rbp: Register, right: i32) {
+    fn sub_mem(&self, left: Register, ptr: Register, offset: i32) {
+        todo!()
+    }
+
+    fn cmp_mem_reg(&self, ptr: Register, left: i32, right: Register) {
+        todo!()
+    }
+
+    fn cmp_reg_mem(&self, left: Register, right: Register, offset: i32) {
         todo!()
     }
 }
@@ -417,21 +426,27 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                     lhs,
                     rhs,
                     result,
-                } => match (temp_locations[*lhs], temp_locations[*rhs]) {
-                    (TempLoc::Reg(left), TempLoc::Reg(right)) => {
-                        assembler.cmp(left, right);
-                        match op {
-                            BoolOp::Equal => todo!(),
-                            BoolOp::Larger => todo!(),
-                            BoolOp::Smaller => todo!(),
+                } => {
+                    match (temp_locations[*lhs], temp_locations[*rhs]) {
+                        (TempLoc::Reg(left), TempLoc::Reg(right)) => {
+                            assembler.cmp(left, right);
                         }
+                        (TempLoc::Reg(left), TempLoc::Mem(right)) => {
+                            assembler.cmp_reg_mem(left, Register::RBP, right)
+                        }
+                        (TempLoc::Mem(left), TempLoc::Reg(right)) => {
+                            assembler.cmp_mem_reg(Register::RBP, left, right)
+                        }
+
+                        (TempLoc::Mem(left), TempLoc::Mem(right)) => todo!(),
+                        (TempLoc::None, loc) => unreachable!("{} {} {:?}", lhs, rhs, loc),
+                        (loc, TempLoc::None) => unreachable!("{} {} {:?}", lhs, rhs, loc),
+                        (TempLoc::Flag(_), loc) => unreachable!("{} {} {:?}", lhs, rhs, loc),
+                        (loc, TempLoc::Flag(_)) => unreachable!("{} {} {:?}", lhs, rhs, loc),
                     }
-                    (TempLoc::Reg(left), TempLoc::Mem(right)) => todo!(),
-                    (TempLoc::Mem(left), TempLoc::Reg(right)) => todo!(),
-                    (TempLoc::Mem(left), TempLoc::Mem(right)) => todo!(),
-                    (TempLoc::None, loc) => unreachable!("{} {} {:?}", lhs, rhs, loc),
-                    (loc, TempLoc::None) => unreachable!("{} {} {:?}", lhs, rhs, loc),
-                },
+
+                    temp_locations[*result] = TempLoc::Flag(*op);
+                }
                 Instruction::LoadValue(index, val) => match val {
                     Value::ImmediateInt(val) => match temp_locations[*index] {
                         TempLoc::Reg(reg) => {
@@ -463,6 +478,7 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                                 }
                             }
                         },
+                        TempLoc::Flag(_) => todo!(),
                     },
                     Value::ImmediateFloat(_) => todo!(),
                     Value::ImmediateString(_) => todo!(),
@@ -553,6 +569,8 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                         (TempLoc::Mem(_), TempLoc::Mem(_)) => todo!(),
                         (TempLoc::None, TempLoc::Mem(_)) => todo!(),
                         (_, TempLoc::None) => unreachable!(),
+                        (TempLoc::Flag(_), _) => unreachable!(),
+                        (_, TempLoc::Flag(_)) => todo!(),
                     }
                 }
                 Instruction::Return(value) => {
@@ -576,6 +594,7 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                             }
                             TempLoc::Mem(_) => todo!(),
                             TempLoc::None => unreachable!(),
+                            TempLoc::Flag(_) => todo!(),
                         },
                         // Value::Call(_, values) => todo!(),
                         Value::Variable(_) => todo!(),
@@ -598,6 +617,7 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                             None => todo!(),
                         },
                         TempLoc::None => unreachable!(),
+                        TempLoc::Flag(_) => todo!(),
                     }
                 }
             }
@@ -771,11 +791,11 @@ fn arithmetic_int(
         (TempLoc::Reg(left), TempLoc::Mem(right)) => {
             reg_mem_op(assembler, lhs, rhs, result, left, right, op, temp_locations);
         }
-        (TempLoc::Mem(left), TempLoc::Reg(reg)) => {
+        (TempLoc::Mem(left), TempLoc::Reg(right)) => {
             match op {
-                ArithmeticOp::Add => assembler.add_mem_reg(reg, Register::RBP, left),
-                ArithmeticOp::Sub => assembler.sub_mem_reg(reg, Register::RBP, left),
-                ArithmeticOp::Mul => assembler.mul_mem_reg(reg, Register::RBP, left),
+                ArithmeticOp::Add => assembler.add_mem_reg(Register::RBP, left, right),
+                ArithmeticOp::Sub => assembler.sub_mem_reg(Register::RBP, left, right),
+                ArithmeticOp::Mul => assembler.mul_mem_reg(Register::RBP, left, right),
                 ArithmeticOp::Div => todo!(),
             }
             temp_locations[*lhs] = TempLoc::None;
@@ -796,6 +816,8 @@ fn arithmetic_int(
         }
         (TempLoc::None, loc) => unreachable!("{} {} {:?}", lhs, rhs, loc),
         (loc, TempLoc::None) => unreachable!("{} {} {:?}", lhs, rhs, loc),
+        (TempLoc::Flag(_), loc) => unreachable!("{} {} {:?}", lhs, rhs, loc),
+        (loc, TempLoc::Flag(_)) => unreachable!("{} {} {:?}", lhs, rhs, loc),
     }
 }
 

@@ -125,27 +125,6 @@ impl Assembler {
         }
     }
 
-    pub fn mov_reg(&mut self, left: Register, right: Register) {
-        if left < Register::R8 {
-            if right < Register::R8 {
-                self.data.extend_from_slice(&[REX_W, 0x89]);
-                self.data.push(0xc0 + left as u8 + (right as u8 * 8));
-            } else {
-                self.data.extend_from_slice(&[REX_W | REX_R, 0x89]);
-                self.data.push(0xc0 + left as u8 + ((right as u8 - 8) * 8));
-            }
-        } else {
-            if right < Register::R8 {
-                self.data.extend_from_slice(&[REX_W | REX_B, 0x89]);
-                self.data.push(0xc0 + left as u8 - 8 + (right as u8 * 8));
-            } else {
-                self.data.extend_from_slice(&[REX_W | REX_R | REX_B, 0x89]);
-                self.data
-                    .push(0xc0 + left as u8 - 8 + ((right as u8 - 8) * 8));
-            }
-        }
-    }
-
     /// Sign extends the value to 64 bits
     pub fn move_to_mem_sign_extend(&mut self, ptr: Register, offset: i32, val: i32) {
         // if reg < register::r8 {
@@ -177,36 +156,8 @@ impl Assembler {
         self.data.push(val);
     }
 
-    pub fn sub(&mut self, left: Register, right: Register) {
-        todo!();
-    }
-
-    pub fn mul(&mut self, left: Register, right: Register) {
-        todo!();
-    }
-
-    pub fn add(&mut self, left: Register, right: Register) {
-        if left < Register::R8 {
-            if right < Register::R8 {
-                self.data.extend_from_slice(&[REX_W, 0x01]);
-                self.data.push(0xc0 + left as u8 + (right as u8 * 8));
-            } else {
-                self.data.extend_from_slice(&[REX_W | REX_R, 0x01]);
-                self.data.push(0xc0 + left as u8 + ((right as u8 - 8) * 8));
-            }
-        } else {
-            if right < Register::R8 {
-                self.data.extend_from_slice(&[REX_W | REX_B, 0x01]);
-                self.data.push(0xc0 + left as u8 - 8 + (right as u8 * 8));
-            } else {
-                self.data.extend_from_slice(&[REX_W | REX_R | REX_B, 0x01]);
-                self.data
-                    .push(0xc0 + left as u8 - 8 + ((right as u8 - 8) * 8));
-            }
-        }
-    }
-
-    /// Calculates the REX prefix, ModR/M byte & optionaly SIB (Scaled Indexed Byte) or displacement
+    /// Calculates the REX prefix, ModR/M byte & optionaly SIB (Scaled Indexed Byte) displacement,
+    /// if offset = None, then rm is determined to be directly accessed register
     // ------ REX prefix ---------
     // Bit     7 6 5 4 3 2 1 0
     // Usage   0 1 0 0 W R X B
@@ -234,9 +185,11 @@ impl Assembler {
     //  - Scale is 1, 2, 4, or 8
     //  - Base and Index encode registers
     //  - Disp is a normal displacement as specified in the adressing modes, encoded after SIB
-    // TODO: Make offset optional, supporting operations with two direct register operands,
-    // unifying code
-    fn mod_rm_ptr(reg: Register, rm: Register, offset: i32) -> (u8, u8, Option<u8>, Vec<u8>) {
+    fn mod_rm_ptr(
+        reg: Register,
+        rm: Register,
+        offset: Option<i32>,
+    ) -> (u8, u8, Option<u8>, Vec<u8>) {
         let mut rex = REX_W;
         if reg >= Register::R8 {
             rex |= REX_R;
@@ -249,6 +202,13 @@ impl Assembler {
         let mut sib: Option<u8> = None;
         let mut disp: Vec<u8> = Vec::with_capacity(4);
 
+        let Some(offset) = offset else {
+            mod_rm |= MOD_REG;
+            mod_rm |= rm as u8 & 0b111;
+
+            return (rex, mod_rm, sib, disp);
+        };
+
         if offset != 0 {
             if let Ok(byte) = <i32 as TryInto<i8>>::try_into(offset) {
                 mod_rm |= MOD_DISP8;
@@ -260,12 +220,12 @@ impl Assembler {
         }
 
         match rm as u8 & 0b111 {
-            4 => {
+            0b100 => {
                 // R/M = 4 is a special value which specifies that a SIB byte will follow this one
                 mod_rm |= 4;
                 sib = Some(0b00_100_100); // Scale 1, index 0, reg rsp
             }
-            5 => {
+            0b101 => {
                 // R/M = 5 still means that we use RBP as expected, but a displacement always
                 // has to follow
                 mod_rm |= 5;
@@ -279,13 +239,14 @@ impl Assembler {
                 mod_rm |= other;
             }
         }
+
         (rex, mod_rm, sib, disp)
     }
 
-    pub fn add_mem(&mut self, reg: Register, ptr: Register, offset: i32) {
-        let (rex, mod_rm, sib, disp) = Self::mod_rm_ptr(reg, ptr, offset);
+    fn encode_rm(&mut self, op: &[u8], reg: Register, rm: Register, offset: Option<i32>) {
+        let (rex, mod_rm, sib, disp) = Self::mod_rm_ptr(reg, rm, offset);
         self.data.push(rex);
-        self.data.push(0x03);
+        self.data.extend_from_slice(op);
         self.data.push(mod_rm);
         if let Some(sib) = sib {
             self.data.push(sib);
@@ -293,105 +254,69 @@ impl Assembler {
         self.data.extend_from_slice(disp.as_slice());
     }
 
-    pub fn imul_mem(&mut self, reg: Register, ptr: Register, offset: i32) {
-        let (rex, mod_rm, sib, disp) = Self::mod_rm_ptr(reg, ptr, offset);
-        self.data.push(rex);
-        self.data.extend_from_slice(&[0x0f, 0xaf]);
-        self.data.push(mod_rm);
-        if let Some(sib) = sib {
-            self.data.push(sib);
-        }
-        self.data.extend_from_slice(disp.as_slice());
+    pub fn mov_reg(&mut self, left: Register, right: Register) {
+        self.encode_rm(&[0x89], right, left, None);
     }
 
     pub fn mov_reg_from_mem(&mut self, reg: Register, ptr: Register, offset: i32) {
-        let (rex, mod_rm, sib, disp) = Self::mod_rm_ptr(reg, ptr, offset);
-        self.data.push(rex);
-        self.data.push(0x8b);
-        self.data.push(mod_rm);
-        if let Some(sib) = sib {
-            self.data.push(sib);
-        }
-        self.data.extend_from_slice(disp.as_slice());
+        self.encode_rm(&[0x8b], reg, ptr, Some(offset));
     }
 
     pub fn mov_to_mem(&mut self, reg: Register, ptr: Register, offset: i32) {
-        let (rex, mod_rm, sib, disp) = Self::mod_rm_ptr(reg, ptr, offset);
-        self.data.push(rex);
-        self.data.push(0x89);
-        self.data.push(mod_rm);
-        if let Some(sib) = sib {
-            self.data.push(sib);
-        }
-        self.data.extend_from_slice(disp.as_slice());
+        self.encode_rm(&[0x89], reg, ptr, Some(offset));
+    }
+
+    pub fn sub(&mut self, left: Register, right: Register) {
+        self.encode_rm(&[0x29], right, left, None);
+    }
+
+    fn sub_mem_reg(&mut self, ptr: Register, offset: i32, right: Register) {
+        self.encode_rm(&[0x29], right, ptr, Some(offset));
+    }
+
+    fn sub_mem(&mut self, left: Register, ptr: Register, offset: i32) {
+        self.encode_rm(&[0x2b], left, ptr, Some(offset));
+    }
+
+    pub fn imul(&mut self, left: Register, right: Register) {
+        self.encode_rm(&[0x0f, 0xaf], left, right, None);
+    }
+
+    pub fn imul_mem(&mut self, reg: Register, ptr: Register, offset: i32) {
+        self.encode_rm(&[0x0f, 0xaf], reg, ptr, Some(offset));
+    }
+
+    pub fn add(&mut self, left: Register, right: Register) {
+        self.encode_rm(&[0x01], right, left, None);
+    }
+
+    pub fn add_mem(&mut self, reg: Register, ptr: Register, offset: i32) {
+        self.encode_rm(&[0x03], reg, ptr, Some(offset));
+    }
+
+    fn add_mem_reg(&mut self, ptr: Register, offset: i32, right: Register) {
+        self.encode_rm(&[0x01], right, ptr, Some(offset));
     }
 
     fn cmp(&mut self, left: Register, right: Register) {
-        if left < Register::R8 {
-            if right < Register::R8 {
-                self.data.extend_from_slice(&[REX_W, 0x39]);
-                self.data.push(0xc0 + left as u8 + (right as u8 * 8));
-            } else {
-                self.data.extend_from_slice(&[REX_W | REX_R, 0x39]);
-                self.data.push(0xc0 + left as u8 + ((right as u8 - 8) * 8));
-            }
-        } else {
-            if right < Register::R8 {
-                self.data.extend_from_slice(&[REX_W | REX_B, 0x39]);
-                self.data.push(0xc0 + left as u8 - 8 + (right as u8 * 8));
-            } else {
-                self.data.extend_from_slice(&[REX_W | REX_R | REX_B, 0x39]);
-                self.data
-                    .push(0xc0 + left as u8 - 8 + ((right as u8 - 8) * 8));
-            }
-        }
-    }
-
-    fn add_mem_reg(&self, ptr: Register, offset: i32, right: Register) {
-        todo!()
-    }
-
-    fn sub_mem_reg(&self, ptr: Register, offset: i32, right: Register) {
-        todo!()
-    }
-
-    fn mul_mem_reg(&self, ptr: Register, offset: i32, right: Register) {
-        todo!()
-    }
-
-    fn sub_mem(&self, left: Register, ptr: Register, offset: i32) {
-        todo!()
+        self.encode_rm(&[0x39], left, right, None);
     }
 
     fn cmp_mem_reg(&mut self, ptr: Register, left: i32, right: Register) {
-        let (rex, mod_rm, sib, disp) = Self::mod_rm_ptr(right, ptr, left);
-        self.data.push(rex);
-        self.data.push(0x39);
-        self.data.push(mod_rm);
-        if let Some(sib) = sib {
-            self.data.push(sib);
-        }
-        self.data.extend_from_slice(disp.as_slice());
+        self.encode_rm(&[0x39], right, ptr, Some(left));
     }
 
     // TODO: the bit '1' (d bit) specifies the direction of operands, possibly could unify all
     // mem_reg & reg_mem instructions
     fn cmp_reg_mem(&mut self, left: Register, right: Register, offset: i32) {
-        let (rex, mod_rm, sib, disp) = Self::mod_rm_ptr(left, right, offset);
-        self.data.push(rex);
-        self.data.push(0x3b);
-        self.data.push(mod_rm);
-        if let Some(sib) = sib {
-            self.data.push(sib);
-        }
-        self.data.extend_from_slice(disp.as_slice());
+        self.encode_rm(&[0x3b], right, left, Some(offset));
     }
 
     // TODO: 64-bit extended variants exist and are valid, but probably should convert it into the
     // x86 legacy mode when I will work on other instructions in legacy mode
     fn set_mem(&mut self, op: BoolOp, ptr: Register, offset: i32) {
         // RAX is a placeholder since Operand 2 is N/A
-        let (rex, mod_rm, sib, disp) = Self::mod_rm_ptr(Register::RAX, ptr, offset);
+        let (rex, mod_rm, sib, disp) = Self::mod_rm_ptr(Register::RAX, ptr, Some(offset));
         self.data.push(rex);
         self.data.push(0x0f);
         let op = match op {
@@ -836,7 +761,7 @@ fn arithmetic_int(
             match op {
                 ArithmeticOp::Add => assembler.add(left, right),
                 ArithmeticOp::Sub => assembler.sub(left, right),
-                ArithmeticOp::Mul => assembler.mul(left, right),
+                ArithmeticOp::Mul => assembler.imul(left, right),
                 ArithmeticOp::Div => todo!(),
             }
 
@@ -849,14 +774,22 @@ fn arithmetic_int(
         }
         (TempLoc::Mem(left), TempLoc::Reg(right)) => {
             match op {
-                ArithmeticOp::Add => assembler.add_mem_reg(Register::RBP, left, right),
-                ArithmeticOp::Sub => assembler.sub_mem_reg(Register::RBP, left, right),
-                ArithmeticOp::Mul => assembler.mul_mem_reg(Register::RBP, left, right),
+                ArithmeticOp::Add => {
+                    assembler.add_mem_reg(Register::RBP, left, right);
+                    temp_locations[*result] = TempLoc::Mem(left);
+                }
+                ArithmeticOp::Sub => {
+                    assembler.sub_mem_reg(Register::RBP, left, right);
+                    temp_locations[*result] = TempLoc::Mem(left);
+                }
+                ArithmeticOp::Mul => {
+                    assembler.imul_mem(right, Register::RBP, left);
+                    temp_locations[*result] = TempLoc::Reg(right);
+                }
                 ArithmeticOp::Div => todo!(),
             }
             temp_locations[*lhs] = TempLoc::None;
             temp_locations[*rhs] = TempLoc::None;
-            temp_locations[*result] = TempLoc::Mem(left);
         }
         (TempLoc::Mem(left), TempLoc::Mem(right)) => {
             match regmap.get_any_free_register() {
@@ -923,10 +856,10 @@ fn call_function(
         match class {
             // 1. If the class is MEMORY, pass the argument on the stack at an address respecting the
             // arguments alignment (which might be more than its natural alignement).
-            ArgumentClass::MEMORY => todo!(),
+            ArgumentClass::Memory => todo!(),
             // 2. If the class is INTEGER, the next available register of the sequence %rdi, %rsi, %rdx,
             // %rcx, %r8 and %r9 is used
-            ArgumentClass::INTEGER => match arg {
+            ArgumentClass::Integer => match arg {
                 Value::ImmediateInt(_) => todo!(),
                 Value::ImmediateFloat(_) => todo!(),
                 Value::ImmediateString(_) => todo!(),
@@ -956,9 +889,9 @@ fn call_function(
             // 5. If the class is X87, X87UP or COMPLEX_X87, it is passed in memory.
             ArgumentClass::X87 => todo!(),
             ArgumentClass::X87UP => todo!(),
-            ArgumentClass::COMPLEX_X87 => todo!(),
-            ArgumentClass::NO_CLASS => unreachable!(),
-            ArgumentClass::STRUCT(items) => todo!(),
+            ArgumentClass::ComplexX87 => todo!(),
+            ArgumentClass::NoClass => unreachable!(),
+            ArgumentClass::Struct(items) => todo!(),
         }
     }
 
@@ -975,27 +908,27 @@ fn call_function(
 
     let class = classify(ir, &func.return_type);
     match class {
-        ArgumentClass::INTEGER => TempLoc::Reg(Register::RAX),
+        ArgumentClass::Integer => TempLoc::Reg(Register::RAX),
         ArgumentClass::SSE => todo!(),
         ArgumentClass::SSEUP => todo!(),
         ArgumentClass::X87 => todo!(),
         ArgumentClass::X87UP => todo!(),
-        ArgumentClass::COMPLEX_X87 => todo!(),
-        ArgumentClass::NO_CLASS => TempLoc::None,
-        ArgumentClass::MEMORY => todo!(),
-        ArgumentClass::STRUCT(items) => todo!(),
+        ArgumentClass::ComplexX87 => todo!(),
+        ArgumentClass::NoClass => TempLoc::None,
+        ArgumentClass::Memory => todo!(),
+        ArgumentClass::Struct(items) => todo!(),
     }
 }
 
 // I'm 100% sure I'm doing this wrong
 fn classify(ir: &IRGen, arg: &DataType) -> ArgumentClass {
     match arg {
-        DataType::I64 => ArgumentClass::INTEGER,
-        DataType::Char => ArgumentClass::INTEGER,
+        DataType::I64 => ArgumentClass::Integer,
+        DataType::Char => ArgumentClass::Integer,
         DataType::Array { data_type, size } => todo!(),
-        DataType::Pointer(data_type) => ArgumentClass::INTEGER,
-        DataType::Boolean => ArgumentClass::INTEGER,
-        DataType::Void => ArgumentClass::NO_CLASS,
+        DataType::Pointer(data_type) => ArgumentClass::Integer,
+        DataType::Boolean => ArgumentClass::Integer,
+        DataType::Void => ArgumentClass::NoClass,
         DataType::F32 => ArgumentClass::SSE,
         DataType::Struct(ident) => {
             let size = sizeof(arg);
@@ -1007,9 +940,9 @@ fn classify(ir: &IRGen, arg: &DataType) -> ArgumentClass {
                 .unwrap();
             // If the size of an object is larger than eight eightbytes, or it contains unaligned fields, it has class MEMORY.
             if size == 0 {
-                ArgumentClass::NO_CLASS
+                ArgumentClass::NoClass
             } else if size > 8 * 8 {
-                ArgumentClass::MEMORY
+                ArgumentClass::Memory
             } else {
                 // If the size of the aggregate exceeds a single eightbyte, each is classified separately.
                 let mut classes = Vec::new();
@@ -1033,26 +966,26 @@ fn classify(ir: &IRGen, arg: &DataType) -> ArgumentClass {
                             let right_class = classify(ir, &right.data_type);
                             if left_class == right_class {
                                 left_class // (a) If both classes are equal, this is the resulting class.
-                            } else if left_class == ArgumentClass::NO_CLASS {
+                            } else if left_class == ArgumentClass::NoClass {
                                 right_class // (b) If one of the classes is NO_CLASS, the resulting class is the other class.
-                            } else if right_class == ArgumentClass::NO_CLASS {
+                            } else if right_class == ArgumentClass::NoClass {
                                 left_class
-                            } else if left_class == ArgumentClass::MEMORY
-                                || right_class == ArgumentClass::MEMORY
+                            } else if left_class == ArgumentClass::Memory
+                                || right_class == ArgumentClass::Memory
                             {
-                                ArgumentClass::MEMORY // (c) If one of the classes is MEMORY, the result is the MEMORY class.
-                            } else if left_class == ArgumentClass::INTEGER
-                                || right_class == ArgumentClass::INTEGER
+                                ArgumentClass::Memory // (c) If one of the classes is MEMORY, the result is the MEMORY class.
+                            } else if left_class == ArgumentClass::Integer
+                                || right_class == ArgumentClass::Integer
                             {
-                                ArgumentClass::INTEGER // (d) If one of the classes is INTEGER, the result is the INTEGER.
+                                ArgumentClass::Integer // (d) If one of the classes is INTEGER, the result is the INTEGER.
                             } else if left_class == ArgumentClass::X87
                                 || left_class == ArgumentClass::X87UP
-                                || left_class == ArgumentClass::COMPLEX_X87
+                                || left_class == ArgumentClass::ComplexX87
                                 || right_class == ArgumentClass::X87
                                 || right_class == ArgumentClass::X87UP
-                                || right_class == ArgumentClass::COMPLEX_X87
+                                || right_class == ArgumentClass::ComplexX87
                             {
-                                ArgumentClass::MEMORY // (e) If one of the classes is X87, X87UP, COMPLEX_X87 class, MEMORY is used as class.
+                                ArgumentClass::Memory // (e) If one of the classes is X87, X87UP, COMPLEX_X87 class, MEMORY is used as class.
                             } else {
                                 ArgumentClass::SSE // (f) Otherwise class SSE is used.
                             }
@@ -1068,18 +1001,18 @@ fn classify(ir: &IRGen, arg: &DataType) -> ArgumentClass {
                 // 5. Then a post merger cleanup is done:
                 for class in &classes {
                     // (a) If one of the classes is MEMORY, the whole argument is passed in memory.
-                    if *class == ArgumentClass::MEMORY {
-                        return ArgumentClass::MEMORY;
+                    if *class == ArgumentClass::Memory {
+                        return ArgumentClass::Memory;
                     }
                 }
                 // (b) If X87UP is not preceded by X87, the whole argument is passed in memory.
                 for a in classes.windows(2) {
                     if a[1] == ArgumentClass::X87UP && a[0] != ArgumentClass::X87 {
-                        return ArgumentClass::MEMORY;
+                        return ArgumentClass::Memory;
                     }
                 }
                 if classes.len() == 1 && *classes.first().unwrap() == ArgumentClass::X87UP {
-                    return ArgumentClass::MEMORY;
+                    return ArgumentClass::Memory;
                 }
                 // (c) If the size of the aggregate exceeds two eightbytes and the first eightbyte isn’t
                 // SSE or any other eightbyte isn’t SSEUP, the whole argument is passed in mem-
@@ -1089,7 +1022,7 @@ fn classify(ir: &IRGen, arg: &DataType) -> ArgumentClass {
                     if *iter.next().unwrap() != ArgumentClass::SSE
                         || iter.any(|c| *c != ArgumentClass::SSEUP)
                     {
-                        return ArgumentClass::MEMORY;
+                        return ArgumentClass::Memory;
                     }
                 }
                 // (d) If SSEUP is not preceded by SSE or SSEUP, it is converted to SSE.
@@ -1104,7 +1037,7 @@ fn classify(ir: &IRGen, arg: &DataType) -> ArgumentClass {
                         *a = ArgumentClass::SSE;
                     }
                 }
-                ArgumentClass::STRUCT(classes)
+                ArgumentClass::Struct(classes)
             }
         }
     }
@@ -1113,15 +1046,15 @@ fn classify(ir: &IRGen, arg: &DataType) -> ArgumentClass {
 /// According to the System V Application Binary Interface 3.2.3 Parameter Passing
 #[derive(Clone, PartialEq, Eq)]
 enum ArgumentClass {
-    INTEGER, // This class consists of integral types that fit into one of the general purpose registers.
+    Integer, // This class consists of integral types that fit into one of the general purpose registers.
     SSE,     // The class consists of types that fit into a vector register.
     SSEUP, // The class consists of types that fit into a vector register and can be passed and returned in the upper bytes of it.
     X87,
-    X87UP,       // These classes consists of types that will be returned via the x87 FPU.
-    COMPLEX_X87, // This class consists of types that will be returned via the x87 FPU.
-    NO_CLASS, // This class is used as initializer in the algorithms. It will be used for padding and empty structures and unions.
-    MEMORY, // This class consists of types that will be passed and returned in memory via the stack.
-    STRUCT(Vec<ArgumentClass>), // Utility
+    X87UP,      // These classes consists of types that will be returned via the x87 FPU.
+    ComplexX87, // This class consists of types that will be returned via the x87 FPU.
+    NoClass, // This class is used as initializer in the algorithms. It will be used for padding and empty structures and unions.
+    Memory, // This class consists of types that will be passed and returned in memory via the stack.
+    Struct(Vec<ArgumentClass>), // Utility
 }
 
 fn sizeof(data_type: &DataType) -> usize {

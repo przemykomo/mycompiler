@@ -8,6 +8,8 @@ square:
 
         cmp     rax, QWORD [RBP-15]
         cmp     QWORD [rax-15], rbp
+        movabs     rax, -1
+        movabs     rbx, -1
 
         cmp     rax, rbp
         ; imul    rax, rax

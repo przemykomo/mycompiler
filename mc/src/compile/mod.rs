@@ -1,5 +1,5 @@
 // #![allow(unused)]
-use std::{fs, intrinsics::unreachable, mem::transmute};
+use std::{fs, mem::transmute};
 
 use object::{
     build::{
@@ -26,7 +26,7 @@ pub enum TempLoc {
     Reg(Register),
     Mem(i32),
     None,
-    Flag(BoolOp),
+    Flags(BoolOp),
 }
 
 const EXTERN_SYMBOL_ADDEND: i64 = -0x04; // All extern symbol relocations generated using NASM have
@@ -206,7 +206,7 @@ impl Assembler {
         }
     }
 
-    /// Calculates the REX prefix, ModR/M byte & optionaly SIB or displacement
+    /// Calculates the REX prefix, ModR/M byte & optionaly SIB (Scaled Indexed Byte) or displacement
     // ------ REX prefix ---------
     // Bit     7 6 5 4 3 2 1 0
     // Usage   0 1 0 0 W R X B
@@ -234,7 +234,8 @@ impl Assembler {
     //  - Scale is 1, 2, 4, or 8
     //  - Base and Index encode registers
     //  - Disp is a normal displacement as specified in the adressing modes, encoded after SIB
-    //
+    // TODO: Make offset optional, supporting operations with two direct register operands,
+    // unifying code
     fn mod_rm_ptr(reg: Register, rm: Register, offset: i32) -> (u8, u8, Option<u8>, Vec<u8>) {
         let mut rex = REX_W;
         if reg >= Register::R8 {
@@ -325,8 +326,25 @@ impl Assembler {
         self.data.extend_from_slice(disp.as_slice());
     }
 
-    fn cmp(&self, left: Register, right: Register) {
-        todo!()
+    fn cmp(&mut self, left: Register, right: Register) {
+        if left < Register::R8 {
+            if right < Register::R8 {
+                self.data.extend_from_slice(&[REX_W, 0x39]);
+                self.data.push(0xc0 + left as u8 + (right as u8 * 8));
+            } else {
+                self.data.extend_from_slice(&[REX_W | REX_R, 0x39]);
+                self.data.push(0xc0 + left as u8 + ((right as u8 - 8) * 8));
+            }
+        } else {
+            if right < Register::R8 {
+                self.data.extend_from_slice(&[REX_W | REX_B, 0x39]);
+                self.data.push(0xc0 + left as u8 - 8 + (right as u8 * 8));
+            } else {
+                self.data.extend_from_slice(&[REX_W | REX_R | REX_B, 0x39]);
+                self.data
+                    .push(0xc0 + left as u8 - 8 + ((right as u8 - 8) * 8));
+            }
+        }
     }
 
     fn add_mem_reg(&self, ptr: Register, offset: i32, right: Register) {
@@ -345,12 +363,48 @@ impl Assembler {
         todo!()
     }
 
-    fn cmp_mem_reg(&self, ptr: Register, left: i32, right: Register) {
-        todo!()
+    fn cmp_mem_reg(&mut self, ptr: Register, left: i32, right: Register) {
+        let (rex, mod_rm, sib, disp) = Self::mod_rm_ptr(right, ptr, left);
+        self.data.push(rex);
+        self.data.push(0x39);
+        self.data.push(mod_rm);
+        if let Some(sib) = sib {
+            self.data.push(sib);
+        }
+        self.data.extend_from_slice(disp.as_slice());
     }
 
-    fn cmp_reg_mem(&self, left: Register, right: Register, offset: i32) {
-        todo!()
+    // TODO: the bit '1' (d bit) specifies the direction of operands, possibly could unify all
+    // mem_reg & reg_mem instructions
+    fn cmp_reg_mem(&mut self, left: Register, right: Register, offset: i32) {
+        let (rex, mod_rm, sib, disp) = Self::mod_rm_ptr(left, right, offset);
+        self.data.push(rex);
+        self.data.push(0x3b);
+        self.data.push(mod_rm);
+        if let Some(sib) = sib {
+            self.data.push(sib);
+        }
+        self.data.extend_from_slice(disp.as_slice());
+    }
+
+    // TODO: 64-bit extended variants exist and are valid, but probably should convert it into the
+    // x86 legacy mode when I will work on other instructions in legacy mode
+    fn set_mem(&mut self, op: BoolOp, ptr: Register, offset: i32) {
+        // RAX is a placeholder since Operand 2 is N/A
+        let (rex, mod_rm, sib, disp) = Self::mod_rm_ptr(Register::RAX, ptr, offset);
+        self.data.push(rex);
+        self.data.push(0x0f);
+        let op = match op {
+            BoolOp::Equal => 0x94,
+            BoolOp::Larger => 0x9f,
+            BoolOp::Smaller => 0x9c,
+        };
+        self.data.push(op);
+        self.data.push(mod_rm);
+        if let Some(sib) = sib {
+            self.data.push(sib);
+        }
+        self.data.extend_from_slice(disp.as_slice());
     }
 }
 
@@ -441,11 +495,11 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                         (TempLoc::Mem(left), TempLoc::Mem(right)) => todo!(),
                         (TempLoc::None, loc) => unreachable!("{} {} {:?}", lhs, rhs, loc),
                         (loc, TempLoc::None) => unreachable!("{} {} {:?}", lhs, rhs, loc),
-                        (TempLoc::Flag(_), loc) => unreachable!("{} {} {:?}", lhs, rhs, loc),
-                        (loc, TempLoc::Flag(_)) => unreachable!("{} {} {:?}", lhs, rhs, loc),
+                        (TempLoc::Flags(_), loc) => unreachable!("{} {} {:?}", lhs, rhs, loc),
+                        (loc, TempLoc::Flags(_)) => unreachable!("{} {} {:?}", lhs, rhs, loc),
                     }
 
-                    temp_locations[*result] = TempLoc::Flag(*op);
+                    temp_locations[*result] = TempLoc::Flags(*op);
                 }
                 Instruction::LoadValue(index, val) => match val {
                     Value::ImmediateInt(val) => match temp_locations[*index] {
@@ -478,7 +532,7 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                                 }
                             }
                         },
-                        TempLoc::Flag(_) => todo!(),
+                        TempLoc::Flags(_) => todo!(),
                     },
                     Value::ImmediateFloat(_) => todo!(),
                     Value::ImmediateString(_) => todo!(),
@@ -569,8 +623,8 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                         (TempLoc::Mem(_), TempLoc::Mem(_)) => todo!(),
                         (TempLoc::None, TempLoc::Mem(_)) => todo!(),
                         (_, TempLoc::None) => unreachable!(),
-                        (TempLoc::Flag(_), _) => unreachable!(),
-                        (_, TempLoc::Flag(_)) => todo!(),
+                        (TempLoc::Flags(_), _) => unreachable!(),
+                        (_, TempLoc::Flags(_)) => todo!(),
                     }
                 }
                 Instruction::Return(value) => {
@@ -594,7 +648,7 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                             }
                             TempLoc::Mem(_) => todo!(),
                             TempLoc::None => unreachable!(),
-                            TempLoc::Flag(_) => todo!(),
+                            TempLoc::Flags(_) => todo!(),
                         },
                         // Value::Call(_, values) => todo!(),
                         Value::Variable(_) => todo!(),
@@ -617,7 +671,9 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                             None => todo!(),
                         },
                         TempLoc::None => unreachable!(),
-                        TempLoc::Flag(_) => todo!(),
+                        TempLoc::Flags(op) => {
+                            assembler.set_mem(op, Register::RBP, to);
+                        }
                     }
                 }
             }
@@ -816,8 +872,8 @@ fn arithmetic_int(
         }
         (TempLoc::None, loc) => unreachable!("{} {} {:?}", lhs, rhs, loc),
         (loc, TempLoc::None) => unreachable!("{} {} {:?}", lhs, rhs, loc),
-        (TempLoc::Flag(_), loc) => unreachable!("{} {} {:?}", lhs, rhs, loc),
-        (loc, TempLoc::Flag(_)) => unreachable!("{} {} {:?}", lhs, rhs, loc),
+        (TempLoc::Flags(_), loc) => unreachable!("{} {} {:?}", lhs, rhs, loc),
+        (loc, TempLoc::Flags(_)) => unreachable!("{} {} {:?}", lhs, rhs, loc),
     }
 }
 

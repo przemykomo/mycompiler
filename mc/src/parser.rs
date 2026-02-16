@@ -1,3 +1,5 @@
+use bitflags::bitflags;
+
 use crate::ast::*;
 use crate::tokenizer::*;
 
@@ -5,10 +7,18 @@ pub struct Parser<'a> {
     tokens: &'a [TokenSpanned],
     index: usize,
     token: &'a TokenSpanned,
+    restrictions: Restrictions,
     pub function_declarations: Vec<FunctionPrototype>,
     pub functions: Vec<FunctionDefinition>,
     pub struct_declarations: Vec<StructDeclaration>,
     pub errors: Vec<Error>,
+}
+
+bitflags! {
+    #[derive(Clone, Copy)]
+    struct Restrictions: u8 {
+        const NO_STRUCT_LITERALS = 1;
+    }
 }
 
 impl Parser<'_> {
@@ -17,6 +27,7 @@ impl Parser<'_> {
             tokens: &tokenized_file.tokens, // must end with an EOF token
             index: 0,
             token: &tokenized_file.tokens[0],
+            restrictions: Restrictions::empty(),
             function_declarations: Vec::new(),
             functions: Vec::new(),
             struct_declarations: Vec::new(),
@@ -224,7 +235,9 @@ impl Parser<'_> {
                 data_type: data_type?,
             })
         } else if self.eat(&Token::If) {
-            let expression = self.parse_expression(0);
+            let expression = self.with_res(Restrictions::NO_STRUCT_LITERALS, |this| {
+                this.parse_expression(0)
+            });
             self.eat_or_err(&Token::CurlyBracketOpen);
             let scope = self.parse_scope();
             let else_scope = if self.eat(&Token::Else) {
@@ -240,7 +253,9 @@ impl Parser<'_> {
                 else_scope,
             })
         } else if self.eat(&Token::While) {
-            let expression = self.parse_expression(0);
+            let expression = self.with_res(Restrictions::NO_STRUCT_LITERALS, |this| {
+                this.parse_expression(0)
+            });
             self.eat_or_err(&Token::CurlyBracketOpen);
             let scope = self.parse_scope();
             Some(Statement::While { expression, scope })
@@ -386,7 +401,10 @@ impl Parser<'_> {
                             }),
                         })
                     }
-                    Token::CurlyBracketOpen => {
+                    Token::CurlyBracketOpen
+                        if !self.restrictions.contains(Restrictions::NO_STRUCT_LITERALS)
+                            || self.is_certainly_not_a_block() =>
+                    {
                         self.next();
                         let mut members = Vec::new();
                         self.parse_definitions(&Token::CurlyBracketClose, |ident, this| {
@@ -395,6 +413,14 @@ impl Parser<'_> {
                                 members.push((ident, expr));
                             }
                         });
+
+                        if self.restrictions.contains(Restrictions::NO_STRUCT_LITERALS) {
+                            self.errors.push(Error {
+                                span,
+                                msg: format!("Struct literals are not allowed here."),
+                            });
+                        }
+
                         Some(ExpressionSpanned {
                             span: Span::between(&span, &self.prev().span),
                             expression: Expression::StructLiteral {
@@ -476,5 +502,24 @@ impl Parser<'_> {
                     .find(|dec| dec.prototype.ident.ident == ident)
                     .map(|dec| &dec.prototype)
             })
+    }
+
+    // `{ ident, ` and `{ ident: ` cannot start a block.
+    fn is_certainly_not_a_block(&self) -> bool {
+        if let Token::Identifier(_) = self.tokens[self.index + 1].token
+            && let Token::Colon | Token::Coma = self.tokens[self.index + 2].token
+        {
+            true
+        } else {
+            false
+        }
+    }
+
+    fn with_res<T>(&mut self, res: Restrictions, f: impl FnOnce(&mut Self) -> T) -> T {
+        let old = self.restrictions;
+        self.restrictions = res;
+        let res = f(self);
+        self.restrictions = old;
+        res
     }
 }

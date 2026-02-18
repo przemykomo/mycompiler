@@ -15,7 +15,7 @@ use object::{
 
 use crate::{
     ast::{ArithmeticOp, BoolOp},
-    ir::{IRGen, Instruction, Value},
+    ir::{IRGen, Instruction, Value, Variable},
     tokenizer::DataType,
 };
 mod regmap;
@@ -90,11 +90,14 @@ impl Assembler {
         self.data.push(0xc3);
     }
 
-    pub fn call(&mut self) {
+    #[must_use]
+    pub fn call(&mut self) -> usize {
         self.data.extend_from_slice(&[0xe8, 0x00, 0x00, 0x00, 0x00]);
+        self.data.len() - 4
     }
 
     /// Returns the offset of where to patch in the stack size
+    #[must_use]
     pub fn stackframe_setup(&mut self) -> usize {
         self.push(Register::RBP);
         self.mov_reg(Register::RBP, Register::RSP);
@@ -331,6 +334,33 @@ impl Assembler {
         }
         self.data.extend_from_slice(disp.as_slice());
     }
+
+    #[must_use]
+    fn jmp(&mut self) -> usize {
+        self.data.extend_from_slice(&[0xeb, 0x00]);
+        self.data.len() - 1
+    }
+
+    #[must_use]
+    fn jmp_cond(&mut self, jmp_cond: JmpCond) -> usize {
+        self.data.extend_from_slice(&[jmp_cond as u8, 0x00]);
+        self.data.len() - 1
+    }
+}
+
+// Use greater & less for signed, above & below for unsigned
+#[repr(u8)]
+enum JmpCond {
+    Above = 0x77,
+    AboveEqual = 0x73,
+    Below = 0x72,
+    BelowEqual = 0x76,
+    Equal = 0x74,
+    NotEqual = 0x75,
+    Greater = 0x7f,
+    GreaterEqual = 0x7d,
+    Less = 0x7c,
+    LessEqual = 0x7e,
 }
 
 fn reg_mem_op(
@@ -355,26 +385,35 @@ fn reg_mem_op(
     temp_locations[*result] = TempLoc::Reg(left);
 }
 
+struct JmpPatch {
+    label: usize,
+    patch_pos: usize,
+}
+
 pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
     let mut externs: Vec<(String, u64)> = Vec::new();
     let mut symbols_to_export: Vec<(String, u64)> = Vec::new();
 
     let mut assembler = Assembler { data: Vec::new() };
 
+    let mut jmp_patches: Vec<JmpPatch> = Vec::new();
+    let mut label_poses: Vec<usize> = vec![0; ir.label_count];
+
     for function in &ir.functions {
         let mut temp_locations: Vec<TempLoc> = vec![TempLoc::None; function.scope.temps.len()];
-        let mut var_locations: Vec<i32> = vec![0; function.scope.vars.len()];
+        // let mut var_locations: Vec<i32> = vec![0; function.scope.vars.len()];
+        let vars = &function.scope.vars;
         let mut regmap = RegMap::new();
         let mut stack_size: i32 = 0;
 
-        for (var_index, var) in function.scope.vars.iter().enumerate() {
-            if var.argument {
-                todo!();
-            } else {
-                stack_size += sizeof(&var.data_type) as i32;
-                var_locations[var_index] = -stack_size;
-            }
-        }
+        // for (var_index, var) in function.scope.vars.iter().enumerate() {
+        //     if var.argument {
+        //         todo!();
+        //     } else {
+        //         stack_size += sizeof(&var.data_type) as i32;
+        //         var_locations[var_index] = -stack_size;
+        //     }
+        // }
 
         symbols_to_export.push((function.ident.clone(), assembler.data.len() as u64));
         let stack_size_patch_offset = assembler.stackframe_setup();
@@ -468,7 +507,7 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                     } => match &function.scope.vars[*var_index].data_type {
                         DataType::I64 => {
                             assert!(matches!(&**array_index, Value::ImmediateInt(0)));
-                            temp_locations[*index] = TempLoc::Mem(var_locations[*var_index]);
+                            temp_locations[*index] = TempLoc::Mem(vars[*var_index].frame_pos);
                         }
                         DataType::Char => todo!(),
                         DataType::Array { data_type, size } => todo!(),
@@ -480,28 +519,14 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                     },
                     Value::MemberAccess => todo!(),
                     Value::Temporary(_) => todo!(),
-                    // Value::Call(ident, items) => {
-                    //     call_function(
-                    //         ir,
-                    //         ident,
-                    //         items,
-                    //         &mut assembler,
-                    //         &mut externs,
-                    //         &mut temp_locations,
-                    //         &mut var_locations,
-                    //         &mut regmap,
-                    //         &mut stack_size,
-                    //     );
-                    // }
                     Value::Variable(var_index) => {
                         match &function.scope.vars[*var_index].data_type {
-                            DataType::I64 => {
-                                temp_locations[*index] = TempLoc::Mem(var_locations[*var_index]);
+                            DataType::I64 | DataType::Boolean => {
+                                temp_locations[*index] = TempLoc::Mem(vars[*var_index].frame_pos);
                             }
                             DataType::Char => todo!(),
                             DataType::Array { data_type, size } => todo!(),
                             DataType::Pointer(data_type) => todo!(),
-                            DataType::Boolean => todo!(),
                             DataType::Void => todo!(),
                             DataType::F32 => todo!(),
                             DataType::Struct(identifier_spanned) => todo!(),
@@ -520,7 +545,7 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                         &mut assembler,
                         &mut externs,
                         &mut temp_locations,
-                        &mut var_locations,
+                        vars,
                         &mut regmap,
                         &mut stack_size,
                     );
@@ -544,7 +569,9 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                         (TempLoc::Reg(left), TempLoc::Mem(right)) => {
                             assembler.mov_reg_from_mem(left, Register::RBP, right);
                         }
-                        (TempLoc::Mem(_), TempLoc::Reg(right)) => todo!(),
+                        (TempLoc::Mem(left), TempLoc::Reg(right)) => {
+                            assembler.mov_to_mem(right, Register::RBP, left);
+                        }
                         (TempLoc::Mem(_), TempLoc::Mem(_)) => todo!(),
                         (TempLoc::None, TempLoc::Mem(_)) => todo!(),
                         (_, TempLoc::None) => unreachable!(),
@@ -576,14 +603,14 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                             TempLoc::Flags(_) => todo!(),
                         },
                         // Value::Call(_, values) => todo!(),
-                        Value::Variable(_) => todo!(),
+                        Value::Variable(var) => todo!(),
                     }
 
                     assembler.stackframe_cleanup();
                     assembler.ret();
                 }
                 Instruction::AssignVar { var, temp } => {
-                    let to = var_locations[*var];
+                    let to = vars[*var].frame_pos;
                     match temp_locations[*temp] {
                         TempLoc::Reg(from) => {
                             assembler.mov_to_mem(from, Register::RBP, to);
@@ -601,6 +628,33 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                         }
                     }
                 }
+                Instruction::Label(label) => {
+                    label_poses[*label] = assembler.data.len();
+                }
+                Instruction::JmpLabelIfNot { label, cond } => {
+                    let jmp_cond = match temp_locations[*cond] {
+                        TempLoc::Reg(register) => todo!(),
+                        TempLoc::Mem(_) => todo!(),
+                        TempLoc::None => unreachable!(),
+                        TempLoc::Flags(bool_op) => match bool_op {
+                            BoolOp::Equal => JmpCond::NotEqual,
+                            BoolOp::Larger => JmpCond::LessEqual,
+                            BoolOp::Smaller => JmpCond::GreaterEqual,
+                        },
+                    };
+                    let patch_pos = assembler.jmp_cond(jmp_cond);
+                    jmp_patches.push(JmpPatch {
+                        label: *label,
+                        patch_pos,
+                    });
+                }
+                Instruction::Jmp(label) => {
+                    let patch_pos = assembler.jmp();
+                    jmp_patches.push(JmpPatch {
+                        label: *label,
+                        patch_pos,
+                    });
+                }
             }
         }
         if let Ok(stack_size) = stack_size.try_into() {
@@ -608,6 +662,15 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
         } else {
             todo!();
         }
+    }
+
+    for JmpPatch { label, patch_pos } in jmp_patches {
+        let target = label_poses[label];
+
+        // - 1 since jmp is relative to the next
+        // instruction and the offset is 1 byte
+        // TODO: Support more than 1 byte short jumps
+        assembler.data[patch_pos] = (target as i64 - patch_pos as i64 - 1) as u8;
     }
 
     let mut builder = Builder::new(object::Endianness::Little, true);
@@ -838,7 +901,7 @@ fn call_function(
     assembler: &mut Assembler,
     externs: &mut Vec<(String, u64)>,
     temp_locations: &mut Vec<TempLoc>,
-    var_locations: &mut Vec<i32>,
+    vars: &[Variable],
     regmap: &mut RegMap,
     stack_size: &mut i32,
 ) -> TempLoc {
@@ -869,7 +932,7 @@ fn call_function(
                     array_index,
                 } => todo!(),
                 Value::Variable(var) => {
-                    let loc = var_locations[*var];
+                    let loc = vars[*var].frame_pos;
                     let reg = arg_regs.pop().unwrap();
                     //TODO: put them on stack if no available regs
                     regmap.free_register(assembler, reg, &ARG_REGS, stack_size, temp_locations);
@@ -903,8 +966,8 @@ fn call_function(
     }
 
     //TODO: this only works with extern functions
-    externs.push((ident.to_string(), assembler.data.len() as u64 + 1));
-    assembler.call();
+    let patch_pos = assembler.call();
+    externs.push((ident.to_string(), patch_pos as u64));
 
     let class = classify(ir, &func.return_type);
     match class {
@@ -1057,7 +1120,7 @@ enum ArgumentClass {
     Struct(Vec<ArgumentClass>), // Utility
 }
 
-fn sizeof(data_type: &DataType) -> usize {
+pub(crate) fn sizeof(data_type: &DataType) -> usize {
     match data_type {
         DataType::I64 => 8,
         DataType::Char => todo!(),

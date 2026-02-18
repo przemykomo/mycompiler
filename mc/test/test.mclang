@@ -9,12 +9,11 @@ struct grzybex {
 
 public fn main() -> i64 {
     let a: i64 = 15;
-    let b: bool = a > 4;
-    if b {
+    if a > 3 {
         a = 1;
     } else {
         a = 2;
     }
 
-    return a;
+    return 0;
 }

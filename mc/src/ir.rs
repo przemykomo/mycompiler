@@ -5,6 +5,7 @@ use std::usize;
 use crate::ast::{
     ArithmeticOp, BinaryOp, BoolOp, Expression, ExpressionSpanned, Statement, UnaryOperator,
 };
+use crate::compile;
 use crate::parser::Parser;
 
 use crate::tokenizer::DataType;
@@ -50,12 +51,14 @@ pub struct Variable {
     pub data_type: DataType,
     initialized: bool,
     pub argument: bool,
+    pub frame_pos: i32,
 }
 
 pub struct IRGen<'a> {
     pub parser: &'a Parser<'a>,
     pub errors: Vec<Error>,
     pub functions: Vec<IRFunc>,
+    pub label_count: usize,
 }
 
 #[derive(Debug)]
@@ -91,6 +94,7 @@ pub struct Scope {
     pub vars: Vec<Variable>,
     pub temps: Vec<TempVar>,
     pub instructions: Vec<Instruction>,
+    pub frame_size: i32,
 }
 
 impl<'a> Scope {
@@ -161,6 +165,12 @@ pub enum Instruction {
         temp: usize,
     },
     Return(Value),
+    Label(usize),
+    JmpLabelIfNot {
+        label: usize,
+        cond: usize,
+    },
+    Jmp(usize),
 }
 
 impl<'a> IRGen<'a> {
@@ -169,6 +179,7 @@ impl<'a> IRGen<'a> {
             parser,
             errors: Vec::new(),
             functions: Vec::new(),
+            label_count: 0,
         }
     }
 
@@ -183,6 +194,7 @@ impl<'a> IRGen<'a> {
                     data_type: arg.1.clone(),
                     initialized: true,
                     argument: true,
+                    frame_pos: 0, //TODO
                 });
             }
 
@@ -190,10 +202,17 @@ impl<'a> IRGen<'a> {
                 vars,
                 temps: Vec::new(),
                 instructions: Vec::new(),
+                frame_size: 0,
             };
 
+            let mut current_frame_size = 0;
             for statement in &function.body {
-                self.compile_statement(statement, &mut scope, &function.prototype.return_type);
+                self.compile_statement(
+                    statement,
+                    &mut scope,
+                    &function.prototype.return_type,
+                    &mut current_frame_size,
+                );
             }
 
             self.functions.push(IRFunc {
@@ -208,13 +227,57 @@ impl<'a> IRGen<'a> {
         statement: &Statement,
         scope: &mut Scope,
         return_type: &DataType,
+        current_frame_size: &mut i32,
     ) {
         match statement {
             Statement::If {
                 expression,
-                scope,
+                scope: if_scope,
                 else_scope,
-            } => todo!(),
+            } => {
+                let condition = expression
+                    .as_ref()
+                    .map(|expr| self.compile_expression(expr, scope))
+                    .flatten();
+                let label = self.alloc_label();
+                let else_end_label = else_scope.as_ref().map(|x| self.alloc_label());
+
+                if let Some((value, data_type)) = condition {
+                    if data_type != DataType::Boolean {
+                        self.errors.push(Error {
+                            span: expression.as_ref().unwrap().span,
+                            msg: format!(
+                                "Mismatched types. Expected boolean, got `{data_type:?}`."
+                            ),
+                        });
+                    }
+                    let cond = scope.move_to_temp(value);
+                    scope
+                        .instructions
+                        .push(Instruction::JmpLabelIfNot { label, cond });
+                }
+
+                let outer_scope_frame = *current_frame_size;
+                for statement in if_scope {
+                    self.compile_statement(statement, scope, return_type, current_frame_size);
+                }
+                scope.frame_size = scope.frame_size.max(*current_frame_size);
+                *current_frame_size = outer_scope_frame;
+                if let Some(label) = else_end_label {
+                    scope.instructions.push(Instruction::Jmp(label));
+                }
+                scope.instructions.push(Instruction::Label(label));
+                if let Some(else_scope) = else_scope {
+                    for statement in else_scope {
+                        self.compile_statement(statement, scope, return_type, current_frame_size);
+                    }
+                    scope.frame_size = scope.frame_size.max(*current_frame_size);
+                    *current_frame_size = outer_scope_frame;
+                }
+                scope
+                    .instructions
+                    .push(Instruction::Label(else_end_label.unwrap()));
+            }
             Statement::Return(expr) => {
                 if let Some((value, expr_type)) = self.compile_expression(expr, scope) {
                     if expr_type != *return_type {
@@ -263,11 +326,13 @@ impl<'a> IRGen<'a> {
                     false
                 };
 
+                *current_frame_size += compile::sizeof(data_type) as i32;
                 scope.vars.push(Variable {
                     ident: ident.ident.clone(),
                     data_type: data_type.clone(),
                     initialized,
                     argument: false,
+                    frame_pos: -*current_frame_size,
                 });
             }
         }
@@ -565,5 +630,11 @@ impl<'a> IRGen<'a> {
                 }
             }
         }
+    }
+
+    fn alloc_label(&mut self) -> usize {
+        let l = self.label_count;
+        self.label_count += 1;
+        l
     }
 }

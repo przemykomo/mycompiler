@@ -9,17 +9,13 @@ struct grzybex {
     b: i64
 }
 
-public fn main() -> i64 {
-    let a: i64 = 15;
-    let b: i64 = 2;
-    if a > 3 {
-        yes();
-        let b: i64 = 4;
-    } else {
-        no();
-    }
+fn myfunc() -> i64 {
+    yes();
+    return 0;
+}
 
-    b = 3;
+public fn main() -> i64 {
+    myfunc();
 
     return 0;
 }

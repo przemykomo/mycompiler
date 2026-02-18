@@ -445,7 +445,7 @@ impl<'a> IRGen<'a> {
                 ))
             }
             Expression::FunctionCall(call) => {
-                let Some(func) = self.parser.get_function(&call.ident.ident) else {
+                let Some((func, _)) = self.parser.get_function(&call.ident.ident) else {
                     self.errors.push(Error {
                         span: call.ident.span,
                         msg: format!("Cannot find a function `{}`", call.ident.ident),

@@ -492,15 +492,16 @@ impl Parser<'_> {
         }
     }
 
-    pub fn get_function(&self, ident: &str) -> Option<&FunctionPrototype> {
+    pub fn get_function(&self, ident: &str) -> Option<(&FunctionPrototype, bool)> {
         self.function_declarations
             .iter()
             .find(|dec| dec.ident.ident == ident)
+            .map(|dec| (dec, true))
             .or_else(|| {
                 self.functions
                     .iter()
                     .find(|dec| dec.prototype.ident.ident == ident)
-                    .map(|dec| &dec.prototype)
+                    .map(|dec| (&dec.prototype, false))
             })
     }
 

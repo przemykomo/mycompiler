@@ -1,5 +1,8 @@
 // #![allow(unused)]
-use std::{fs, mem::transmute};
+use std::{
+    fs,
+    mem::{self, transmute},
+};
 
 use object::{
     build::{
@@ -29,8 +32,10 @@ pub enum TempLoc {
     Flags(BoolOp),
 }
 
-const EXTERN_SYMBOL_ADDEND: i64 = -0x04; // All extern symbol relocations generated using NASM have
-// this addend, no idea why.
+const CALL_RELOCATION_SYMBOL_ADDEND: i64 = -0x04; // All extern symbol relocations generated using NASM have
+// this addend, I believe that's because the call instruction has 4 byte argument and the
+// displacement is relative to the next instruction
+
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
 pub enum Register {
     RAX = 0,
@@ -390,32 +395,29 @@ struct JmpPatch {
     patch_pos: usize,
 }
 
+struct CallPatch {
+    ident: String,
+    patch_pos: usize,
+    external: bool,
+}
+
 pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
-    let mut externs: Vec<(String, u64)> = Vec::new();
-    let mut symbols_to_export: Vec<(String, u64)> = Vec::new();
+    // let mut externs: Vec<(String, u64)> = Vec::new();
+    let mut symbols: Vec<(String, u64)> = Vec::new();
 
     let mut assembler = Assembler { data: Vec::new() };
 
+    let mut call_patches: Vec<CallPatch> = Vec::new();
     let mut jmp_patches: Vec<JmpPatch> = Vec::new();
     let mut label_poses: Vec<usize> = vec![0; ir.label_count];
 
     for function in &ir.functions {
         let mut temp_locations: Vec<TempLoc> = vec![TempLoc::None; function.scope.temps.len()];
-        // let mut var_locations: Vec<i32> = vec![0; function.scope.vars.len()];
         let vars = &function.scope.vars;
         let mut regmap = RegMap::new();
         let mut stack_size: i32 = 0;
 
-        // for (var_index, var) in function.scope.vars.iter().enumerate() {
-        //     if var.argument {
-        //         todo!();
-        //     } else {
-        //         stack_size += sizeof(&var.data_type) as i32;
-        //         var_locations[var_index] = -stack_size;
-        //     }
-        // }
-
-        symbols_to_export.push((function.ident.clone(), assembler.data.len() as u64));
+        symbols.push((function.ident.clone(), assembler.data.len() as u64));
         let stack_size_patch_offset = assembler.stackframe_setup();
         for instruction in &function.scope.instructions {
             match instruction {
@@ -543,7 +545,7 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                         ident,
                         values,
                         &mut assembler,
-                        &mut externs,
+                        &mut call_patches,
                         &mut temp_locations,
                         vars,
                         &mut regmap,
@@ -675,6 +677,45 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
 
     let mut builder = Builder::new(object::Endianness::Little, true);
 
+    let mut extern_relocations: Vec<Relocation> = Vec::new();
+
+    for CallPatch {
+        ident,
+        patch_pos,
+        external,
+    } in &call_patches
+    {
+        if *external {
+            let name = ident.as_str().into();
+            let sym = builder.symbols.iter_mut().find(|s| s.name == name);
+            let sym: &mut Symbol = if let Some(sym) = sym {
+                sym
+            } else {
+                builder.symbols.add()
+            };
+
+            sym.name = name;
+            sym.set_st_info(STB_GLOBAL, STT_NOTYPE);
+            let id = sym.id();
+            extern_relocations.push(Relocation {
+                r_offset: *patch_pos as u64,
+                symbol: Some(id),
+                r_type: R_X86_64_PC32,
+                r_addend: CALL_RELOCATION_SYMBOL_ADDEND,
+            });
+        } else {
+            let (_, target) = symbols.iter().find(|(sym, _)| ident == sym).unwrap();
+            let displacement: [u8; 4] = ((*target as i64 - *patch_pos as i64
+                + CALL_RELOCATION_SYMBOL_ADDEND) as i32)
+                .to_ne_bytes();
+
+            assembler.data[*patch_pos] = displacement[0];
+            assembler.data[*patch_pos + 1] = displacement[1];
+            assembler.data[*patch_pos + 2] = displacement[2];
+            assembler.data[*patch_pos + 3] = displacement[3];
+        }
+    }
+
     builder.header.e_type = ET_REL;
     builder.header.e_machine = EM_X86_64;
 
@@ -729,31 +770,14 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
     // data_sym.set_st_info(STB_LOCAL, STT_SECTION);
     // let data_sym_id = data_sym.id();
 
-    for (ident, offset) in symbols_to_export {
+    for (ident, offset) in &symbols {
         let sym = builder.symbols.add();
-        let ident: Vec<u8> = ident.into();
+        let ident: Vec<u8> = ident.clone().into();
         sym.name = ident.into();
         sym.section = Some(text_id);
-        sym.st_value = offset;
+        sym.st_value = *offset;
         sym.set_st_info(STB_GLOBAL, STT_NOTYPE);
     }
-
-    let externs: Vec<(SymbolId, u64)> = externs
-        .iter()
-        .map(|(ident, offset)| {
-            let name = ident.as_str().into();
-            let sym = builder.symbols.iter_mut().find(|s| s.name == name);
-            let sym: &mut Symbol = if let Some(sym) = sym {
-                sym
-            } else {
-                builder.symbols.add()
-            };
-
-            sym.name = name;
-            sym.set_st_info(STB_GLOBAL, STT_NOTYPE);
-            (sym.id(), *offset)
-        })
-        .collect();
 
     let rela = builder.sections.add();
     rela.name = ".rela.text".into();
@@ -761,16 +785,6 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
     rela.sh_link_section = Some(symtab_id);
     rela.sh_info_section = Some(text_id);
     rela.sh_entsize = 0x18; // readelf expexted 18 so...
-
-    let extern_relocations = externs
-        .iter()
-        .map(|(id, offset)| Relocation {
-            r_offset: *offset,
-            symbol: Some(*id),
-            r_type: R_X86_64_PC32,
-            r_addend: EXTERN_SYMBOL_ADDEND,
-        })
-        .collect();
 
     // let relocations = vec![
     //     Relocation {
@@ -899,13 +913,13 @@ fn call_function(
     ident: &str,
     values: &[Value],
     assembler: &mut Assembler,
-    externs: &mut Vec<(String, u64)>,
+    call_patches: &mut Vec<CallPatch>,
     temp_locations: &mut Vec<TempLoc>,
     vars: &[Variable],
     regmap: &mut RegMap,
     stack_size: &mut i32,
 ) -> TempLoc {
-    let func = ir.parser.get_function(ident).unwrap();
+    let (func, external) = ir.parser.get_function(ident).unwrap();
     let classes: Vec<ArgumentClass> = func
         .arguments
         .iter()
@@ -965,9 +979,12 @@ fn call_function(
         }
     }
 
-    //TODO: this only works with extern functions
     let patch_pos = assembler.call();
-    externs.push((ident.to_string(), patch_pos as u64));
+    call_patches.push(CallPatch {
+        ident: ident.to_owned(),
+        patch_pos,
+        external,
+    });
 
     let class = classify(ir, &func.return_type);
     match class {

@@ -3,7 +3,8 @@ use std::fmt::{Debug, Display, Write};
 use std::usize;
 
 use crate::ast::{
-    ArithmeticOp, BinaryOp, BoolOp, Expression, ExpressionSpanned, Statement, UnaryOperator,
+    ArithmeticOp, BinaryOp, BoolOp, Expression, ExpressionSpanned, IdentifierSpanned, Statement,
+    UnaryOperator,
 };
 use crate::compile;
 use crate::parser::Parser;
@@ -47,11 +48,12 @@ pub enum Value {
 
 #[derive(Debug)]
 pub struct Variable {
-    ident: String,
+    ident: IdentifierSpanned,
     pub data_type: DataType,
     initialized: bool,
     pub argument: bool,
     pub frame_pos: i32,
+    pub reachable: bool,
 }
 
 pub struct IRGen<'a> {
@@ -126,6 +128,12 @@ impl<'a> Scope {
         self.instructions.push(Instruction::LoadValue(temp, val));
         temp
     }
+
+    fn truncate_reachable_vars(&mut self, starting: usize) {
+        for var in &mut self.vars[starting..] {
+            var.reachable = false;
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -190,11 +198,12 @@ impl<'a> IRGen<'a> {
             let mut vars: Vec<Variable> = Vec::new();
             for arg in &function.prototype.arguments {
                 vars.push(Variable {
-                    ident: arg.0.ident.clone(),
+                    ident: arg.0.clone(),
                     data_type: arg.1.clone(),
                     initialized: true,
                     argument: true,
                     frame_pos: 0, //TODO
+                    reachable: true,
                 });
             }
 
@@ -258,21 +267,29 @@ impl<'a> IRGen<'a> {
                 }
 
                 let outer_scope_frame = *current_frame_size;
+                let mut outer_vars_len = scope.vars.len();
                 for statement in if_scope {
                     self.compile_statement(statement, scope, return_type, current_frame_size);
                 }
+
                 scope.frame_size = scope.frame_size.max(*current_frame_size);
                 *current_frame_size = outer_scope_frame;
+                scope.truncate_reachable_vars(outer_vars_len);
+
                 if let Some(label) = else_end_label {
                     scope.instructions.push(Instruction::Jmp(label));
                 }
                 scope.instructions.push(Instruction::Label(label));
+
                 if let Some(else_scope) = else_scope {
+                    outer_vars_len = scope.vars.len();
                     for statement in else_scope {
                         self.compile_statement(statement, scope, return_type, current_frame_size);
                     }
+
                     scope.frame_size = scope.frame_size.max(*current_frame_size);
                     *current_frame_size = outer_scope_frame;
+                    scope.truncate_reachable_vars(outer_vars_len);
                 }
                 scope
                     .instructions
@@ -328,11 +345,12 @@ impl<'a> IRGen<'a> {
 
                 *current_frame_size += compile::sizeof(data_type) as i32;
                 scope.vars.push(Variable {
-                    ident: ident.ident.clone(),
+                    ident: ident.clone(),
                     data_type: data_type.clone(),
                     initialized,
                     argument: false,
                     frame_pos: -*current_frame_size,
+                    reachable: true,
                 });
             }
         }
@@ -475,39 +493,12 @@ impl<'a> IRGen<'a> {
 
                 Some((Value::Temporary(result), func.return_type.clone()))
             }
-            Expression::Identifier(ident) => {
-                if let Some((var_index, var)) = scope
-                    .vars
-                    .iter()
-                    .enumerate()
-                    .rev()
-                    .find(|(_, var)| var.ident == ident.ident)
-                {
-                    // Some((
-                    //     Value::ArrayAccess {
-                    //         var_index,
-                    //         array_index: Box::new(Value::ImmediateInt(0)),
-                    //     },
-                    //     var.data_type.clone(),
-                    // )) TODO?
-                    Some((Value::Variable(var_index), var.data_type.clone()))
-                } else {
-                    self.errors.push(Error {
-                        span: ident.span,
-                        msg: format!("Undefined variable `{}`", ident.ident),
-                    });
-                    None
-                }
-            }
+            Expression::Identifier(ident) => self.use_var(scope, ident, |(var_index, var)| {
+                Some((Value::Variable(var_index), var.data_type.clone()))
+            }),
             Expression::ArraySubscript { ident, element } => {
                 let element = self.compile_expression(element, scope);
-                if let Some((var_index, var)) = scope
-                    .vars
-                    .iter()
-                    .enumerate()
-                    .rev()
-                    .find(|(_, var)| var.ident == ident.ident)
-                {
+                self.use_var(scope, ident, |(var_index, var)| {
                     let DataType::Array { data_type, size } = &var.data_type else {
                         return None;
                     };
@@ -523,13 +514,7 @@ impl<'a> IRGen<'a> {
                     } else {
                         None
                     }
-                } else {
-                    self.errors.push(Error {
-                        span: ident.span,
-                        msg: format!("Undefined variable `{}`", ident.ident),
-                    });
-                    None
-                }
+                })
             }
             Expression::Binary {
                 lhs,
@@ -629,6 +614,51 @@ impl<'a> IRGen<'a> {
                     UnaryOperator::Negation => Some(todo!()),
                 }
             }
+        }
+    }
+
+    fn use_var(
+        &mut self,
+        scope: &mut Scope,
+        ident: &IdentifierSpanned,
+        f: impl FnOnce((usize, &Variable)) -> Option<(Value, DataType)>,
+    ) -> Option<(Value, DataType)> {
+        let mut found_unreachable = None;
+        if let Some((var_index, var)) = scope
+            .vars
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(i, var)| {
+                if var.ident.ident == ident.ident {
+                    if !var.reachable && found_unreachable.is_none() {
+                        found_unreachable = Some((*i, *var));
+                        false
+                    } else {
+                        true
+                    }
+                } else {
+                    false
+                }
+            })
+            .or(found_unreachable)
+        {
+            if !var.reachable {
+                self.errors.push(Error {
+                    span: ident.span,
+                    msg: format!(
+                        "Unreachable variable `{}`, possible candidate: `{:?}`",
+                        ident.ident, var.ident.span
+                    ),
+                });
+            }
+            f((var_index, var))
+        } else {
+            self.errors.push(Error {
+                span: ident.span,
+                msg: format!("Undefined variable `{}`", ident.ident),
+            });
+            None
         }
     }
 

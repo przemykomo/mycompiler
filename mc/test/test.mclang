@@ -1,6 +1,8 @@
 fn mytest();
 fn add(a: i64, b: i64) -> i64;
 fn print_num(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64);
+fn yes();
+fn no();
 
 struct grzybex {
     a: i64,
@@ -9,11 +11,15 @@ struct grzybex {
 
 public fn main() -> i64 {
     let a: i64 = 15;
+    let b: i64 = 2;
     if a > 3 {
-        a = 1;
+        yes();
+        let b: i64 = 4;
     } else {
-        a = 2;
+        no();
     }
+
+    b = 3;
 
     return 0;
 }

@@ -9,8 +9,8 @@ use crate::ast::{
 use crate::compile;
 use crate::parser::Parser;
 
-use crate::tokenizer::DataType;
 use crate::tokenizer::Error;
+use crate::tokenizer::{DataType, Span};
 
 struct List<'a, T: Display>(&'a [T]);
 
@@ -252,29 +252,18 @@ impl<'a> IRGen<'a> {
                 let else_end_label = else_scope.as_ref().map(|x| self.alloc_label());
 
                 if let Some((value, data_type)) = condition {
-                    if data_type != DataType::Boolean {
-                        self.errors.push(Error {
-                            span: expression.as_ref().unwrap().span,
-                            msg: format!(
-                                "Mismatched types. Expected boolean, got `{data_type:?}`."
-                            ),
-                        });
-                    }
+                    self.err_if_mismatched(
+                        &expression.as_ref().unwrap().span,
+                        data_type,
+                        DataType::Boolean,
+                    );
                     let cond = scope.move_to_temp(value);
                     scope
                         .instructions
                         .push(Instruction::JmpLabelIfNot { label, cond });
                 }
 
-                let outer_scope_frame = *current_frame_size;
-                let mut outer_vars_len = scope.vars.len();
-                for statement in if_scope {
-                    self.compile_statement(statement, scope, return_type, current_frame_size);
-                }
-
-                scope.frame_size = scope.frame_size.max(*current_frame_size);
-                *current_frame_size = outer_scope_frame;
-                scope.truncate_reachable_vars(outer_vars_len);
+                self.subscope(scope, return_type, current_frame_size, if_scope);
 
                 if let Some(label) = else_end_label {
                     scope.instructions.push(Instruction::Jmp(label));
@@ -282,14 +271,7 @@ impl<'a> IRGen<'a> {
                 scope.instructions.push(Instruction::Label(label));
 
                 if let Some(else_scope) = else_scope {
-                    outer_vars_len = scope.vars.len();
-                    for statement in else_scope {
-                        self.compile_statement(statement, scope, return_type, current_frame_size);
-                    }
-
-                    scope.frame_size = scope.frame_size.max(*current_frame_size);
-                    *current_frame_size = outer_scope_frame;
-                    scope.truncate_reachable_vars(outer_vars_len);
+                    self.subscope(scope, return_type, current_frame_size, else_scope);
                 }
                 scope
                     .instructions
@@ -297,21 +279,43 @@ impl<'a> IRGen<'a> {
             }
             Statement::Return(expr) => {
                 if let Some((value, expr_type)) = self.compile_expression(expr, scope) {
-                    if expr_type != *return_type {
-                        self.errors.push(Error {
-                            span: expr.span,
-                            msg: format!(
-                                "Mismatched types. Expected `{return_type:?}`, got `{expr_type:?}`."
-                            ),
-                        });
-                    }
+                    self.err_if_mismatched(&expr.span, return_type.clone(), expr_type.clone());
                     scope.instructions.push(Instruction::Return(value));
                 }
             }
             Statement::Expression(expr) => {
                 self.compile_expression(expr, scope);
             }
-            Statement::While { expression, scope } => todo!(),
+            Statement::While {
+                expression,
+                scope: while_scope,
+            } => {
+                let label_begin = self.alloc_label();
+                let label_end = self.alloc_label();
+                scope.instructions.push(Instruction::Label(label_begin));
+
+                let condition = expression
+                    .as_ref()
+                    .map(|expr| self.compile_expression(expr, scope))
+                    .flatten();
+
+                if let Some((value, data_type)) = condition {
+                    self.err_if_mismatched(
+                        &expression.as_ref().unwrap().span,
+                        data_type,
+                        DataType::Boolean,
+                    );
+                    let cond = scope.move_to_temp(value);
+                    scope.instructions.push(Instruction::JmpLabelIfNot {
+                        label: label_end,
+                        cond,
+                    });
+                }
+
+                self.subscope(scope, return_type, current_frame_size, while_scope);
+                scope.instructions.push(Instruction::Jmp(label_begin));
+                scope.instructions.push(Instruction::Label(label_end));
+            }
             Statement::For {
                 inital_statement,
                 condition_expr,
@@ -325,13 +329,7 @@ impl<'a> IRGen<'a> {
             } => {
                 let initialized = if let Some(expr) = expression {
                     if let Some((value, expr_type)) = self.compile_expression(expr, scope) {
-                        if *data_type != expr_type {
-                            self.errors.push(Error {
-                                span: expr.span,
-                                msg: format!(
-                                "Mismatched types. Expected `{data_type:?}`, got `{expr_type:?}`."),
-                            });
-                        }
+                        self.err_if_mismatched(&expr.span, data_type.clone(), expr_type);
                         let var = scope.vars.len();
                         let temp = scope.move_to_temp(value);
                         scope
@@ -353,6 +351,33 @@ impl<'a> IRGen<'a> {
                     reachable: true,
                 });
             }
+        }
+    }
+
+    fn subscope(
+        &mut self,
+        scope: &mut Scope,
+        return_type: &DataType,
+        current_frame_size: &mut i32,
+        statements: &Vec<Statement>,
+    ) {
+        let outer_scope_frame = *current_frame_size;
+        let outer_vars_len = scope.vars.len();
+        for statement in statements {
+            self.compile_statement(statement, scope, return_type, current_frame_size);
+        }
+
+        scope.frame_size = scope.frame_size.max(*current_frame_size);
+        *current_frame_size = outer_scope_frame;
+        scope.truncate_reachable_vars(outer_vars_len);
+    }
+
+    fn err_if_mismatched(&mut self, span: &Span, expected: DataType, got: DataType) {
+        if got != expected {
+            self.errors.push(Error {
+                span: *span,
+                msg: format!("Mismatched types. Expected `{expected:?}`, got `{got:?}`."),
+            });
         }
     }
 
@@ -407,14 +432,7 @@ impl<'a> IRGen<'a> {
                         }
                         if let Some(expr) = expr {
                             if let Some((value, data_type)) = self.compile_expression(expr, scope) {
-                                if m.data_type != data_type {
-                                    self.errors.push(Error {
-                                        span: expr.span,
-                                        msg: format!(
-                                        "Mismatched types. Expected `{:?}`, got `{data_type:?}`.", m.data_type),
-                                    });
-                                    continue;
-                                }
+                                self.err_if_mismatched(&expr.span, m.data_type.clone(), data_type);
                                 values.push(value);
                             }
                         }
@@ -459,16 +477,17 @@ impl<'a> IRGen<'a> {
                     let expr_result = self.compile_expression(expr, scope);
                     if let (Some((_ident, arg_type)), Some((value, data_type))) = (arg, expr_result)
                     {
-                        if *arg_type != data_type {
-                            self.errors.push(Error {
-                                span: expr.span,
-                                msg: format!(
-                                    "Mismatched types. Expected `{arg_type:?}`, got `{data_type:?}`."
-                                ),
-                            });
-                        } else {
-                            values.push(value);
-                        }
+                        self.err_if_mismatched(&expr.span, arg_type.clone(), data_type);
+                        // if *arg_type != data_type {
+                        //     self.errors.push(Error {
+                        //         span: expr.span,
+                        //         msg: format!(
+                        //             "Mismatched types. Expected `{arg_type:?}`, got `{data_type:?}`."
+                        //         ),
+                        //     });
+                        // } else {
+                        values.push(value);
+                        // }
                     }
                 }
 

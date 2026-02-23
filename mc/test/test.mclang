@@ -15,7 +15,10 @@ fn myfunc() -> i64 {
 }
 
 public fn main() -> i64 {
-    myfunc();
+    let i: i64 = 5;
+    while i > 0 {
+        myfunc();
+    }
 
     return 0;
 }

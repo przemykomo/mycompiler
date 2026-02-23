@@ -15,16 +15,8 @@ void mytest() { printf("hello\n"); }
 
 int64_t add(int64_t a, int64_t b) { return a + b; }
 
-void print_num(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e,
-               int64_t f) {
-    printf("a: %li, b: %li, c: %li, d: %li, e: %li, f: %li \n", a, b, c, d, e,
-           f);
-}
+void print_num(int64_t a, int64_t b) { printf("a: %li, b: %li", a, b); }
 
-void yes() {
-    printf("Yes\n");
-}
+void yes() { printf("Yes\n"); }
 
-void no() {
-    printf("No\n");
-}
+void no() { printf("No\n"); }

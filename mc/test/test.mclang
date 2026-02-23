@@ -1,6 +1,6 @@
 fn mytest();
 fn add(a: i64, b: i64) -> i64;
-fn print_num(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64);
+fn print_num(a: i64, b: i64);
 fn yes();
 fn no();
 
@@ -15,10 +15,8 @@ fn myfunc() -> i64 {
 }
 
 public fn main() -> i64 {
-    let i: i64 = 5;
-    while i > 0 {
-        myfunc();
-    }
-
+    let a: i64 = 5;
+    let b: i64 = a - 1;
+    print_num(a, b);
     return 0;
 }

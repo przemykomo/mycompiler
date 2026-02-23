@@ -1,4 +1,4 @@
-use crate::compile::{Assembler, TempLoc};
+use crate::compile::{Assembler, TempValue};
 
 use super::Register;
 
@@ -58,7 +58,7 @@ impl RegMap {
         target_reg: Register,
         protected_registers: &[Register],
         stack_size: &mut i32,
-        temp_locations: &mut Vec<TempLoc>,
+        temp_locations: &mut Vec<TempValue>,
     ) {
         if !self.contains_key(&target_reg) {
             return;
@@ -78,7 +78,7 @@ impl RegMap {
 
         *stack_size += 8;
         asm.mov_to_mem(target_reg, Register::RBP, -*stack_size);
-        temp_locations[temp] = TempLoc::Mem(-*stack_size);
+        temp_locations[temp] = TempValue::Mem(-*stack_size);
     }
 }
 

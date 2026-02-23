@@ -25,7 +25,7 @@ mod regmap;
 use regmap::RegMap;
 
 #[derive(Debug, Clone, Copy)]
-pub enum TempLoc {
+pub enum TempValue {
     Reg(Register),
     Mem(i32),
     None,
@@ -376,7 +376,7 @@ fn reg_mem_op(
     left: Register,
     right: i32,
     op: &ArithmeticOp,
-    temp_locations: &mut Vec<TempLoc>,
+    temp_locations: &mut Vec<TempValue>,
 ) {
     match op {
         ArithmeticOp::Add => assembler.add_mem(left, Register::RBP, right),
@@ -385,9 +385,9 @@ fn reg_mem_op(
         ArithmeticOp::Div => todo!(),
     }
 
-    temp_locations[*lhs] = TempLoc::None;
-    temp_locations[*rhs] = TempLoc::None;
-    temp_locations[*result] = TempLoc::Reg(left);
+    temp_locations[*lhs] = TempValue::None;
+    temp_locations[*rhs] = TempValue::None;
+    temp_locations[*result] = TempValue::Reg(left);
 }
 
 struct JmpPatch {
@@ -412,7 +412,7 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
     let mut label_poses: Vec<usize> = vec![0; ir.label_count];
 
     for function in &ir.functions {
-        let mut temp_locations: Vec<TempLoc> = vec![TempLoc::None; function.scope.temps.len()];
+        let mut temp_locations: Vec<TempValue> = vec![TempValue::None; function.scope.temps.len()];
         let vars = &function.scope.vars;
         let mut regmap = RegMap::new();
         let mut stack_size: i32 = 0;
@@ -448,41 +448,41 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                     result,
                 } => {
                     match (temp_locations[*lhs], temp_locations[*rhs]) {
-                        (TempLoc::Reg(left), TempLoc::Reg(right)) => {
+                        (TempValue::Reg(left), TempValue::Reg(right)) => {
                             assembler.cmp(left, right);
                         }
-                        (TempLoc::Reg(left), TempLoc::Mem(right)) => {
+                        (TempValue::Reg(left), TempValue::Mem(right)) => {
                             assembler.cmp_reg_mem(left, Register::RBP, right)
                         }
-                        (TempLoc::Mem(left), TempLoc::Reg(right)) => {
+                        (TempValue::Mem(left), TempValue::Reg(right)) => {
                             assembler.cmp_mem_reg(Register::RBP, left, right)
                         }
 
-                        (TempLoc::Mem(left), TempLoc::Mem(right)) => todo!(),
-                        (TempLoc::None, loc) => unreachable!("{} {} {:?}", lhs, rhs, loc),
-                        (loc, TempLoc::None) => unreachable!("{} {} {:?}", lhs, rhs, loc),
-                        (TempLoc::Flags(_), loc) => unreachable!("{} {} {:?}", lhs, rhs, loc),
-                        (loc, TempLoc::Flags(_)) => unreachable!("{} {} {:?}", lhs, rhs, loc),
+                        (TempValue::Mem(left), TempValue::Mem(right)) => todo!(),
+                        (TempValue::None, loc) => unreachable!("{} {} {:?}", lhs, rhs, loc),
+                        (loc, TempValue::None) => unreachable!("{} {} {:?}", lhs, rhs, loc),
+                        (TempValue::Flags(_), loc) => unreachable!("{} {} {:?}", lhs, rhs, loc),
+                        (loc, TempValue::Flags(_)) => unreachable!("{} {} {:?}", lhs, rhs, loc),
                     }
 
-                    temp_locations[*result] = TempLoc::Flags(*op);
+                    temp_locations[*result] = TempValue::Flags(*op);
                 }
                 Instruction::LoadValue(index, val) => match val {
                     Value::ImmediateInt(val) => match temp_locations[*index] {
-                        TempLoc::Reg(reg) => {
+                        TempValue::Reg(reg) => {
                             assembler.mov(reg, *val);
                         }
-                        TempLoc::Mem(offset) => {
+                        TempValue::Mem(offset) => {
                             if let Ok(val) = (*val).try_into() {
                                 assembler.move_to_mem_sign_extend(Register::RBP, offset, val);
                             } else {
                                 todo!();
                             }
                         }
-                        TempLoc::None => match regmap.get_any_free_register() {
+                        TempValue::None => match regmap.get_any_free_register() {
                             Some(reg) => {
                                 regmap.insert(reg, *index);
-                                temp_locations[*index] = TempLoc::Reg(reg);
+                                temp_locations[*index] = TempValue::Reg(reg);
                                 assembler.mov(reg, *val);
                             }
                             None => {
@@ -498,7 +498,7 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                                 }
                             }
                         },
-                        TempLoc::Flags(_) => todo!(),
+                        TempValue::Flags(_) => todo!(),
                     },
                     Value::ImmediateFloat(_) => todo!(),
                     Value::ImmediateString(_) => todo!(),
@@ -508,8 +508,9 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                         array_index,
                     } => match &function.scope.vars[*var_index].data_type {
                         DataType::I64 => {
-                            assert!(matches!(&**array_index, Value::ImmediateInt(0)));
-                            temp_locations[*index] = TempLoc::Mem(vars[*var_index].frame_pos);
+                            todo!();
+                            // assert!(matches!(&**array_index, Value::ImmediateInt(0)));
+                            // temp_locations[*index] = TempValue::Mem(vars[*var_index].frame_pos);
                         }
                         DataType::Char => todo!(),
                         DataType::Array { data_type, size } => todo!(),
@@ -524,7 +525,19 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                     Value::Variable(var_index) => {
                         match &function.scope.vars[*var_index].data_type {
                             DataType::I64 | DataType::Boolean => {
-                                temp_locations[*index] = TempLoc::Mem(vars[*var_index].frame_pos);
+                                // temp_locations[*index] = TempValue::Mem(vars[*var_index].frame_pos);
+                                match regmap.get_any_free_register() {
+                                    Some(reg) => {
+                                        regmap.insert(reg, *index);
+                                        temp_locations[*index] = TempValue::Reg(reg);
+                                        assembler.mov_reg_from_mem(
+                                            reg,
+                                            Register::RBP,
+                                            vars[*var_index].frame_pos,
+                                        );
+                                    }
+                                    None => todo!(),
+                                }
                             }
                             DataType::Char => todo!(),
                             DataType::Array { data_type, size } => todo!(),
@@ -556,10 +569,10 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                 }
                 Instruction::AssignTemp { lhs, rhs } => {
                     match (temp_locations[*lhs], temp_locations[*rhs]) {
-                        (TempLoc::Reg(left), TempLoc::Reg(right)) => {
+                        (TempValue::Reg(left), TempValue::Reg(right)) => {
                             assembler.mov_reg(left, right);
                         }
-                        (TempLoc::None, TempLoc::Reg(right)) => {
+                        (TempValue::None, TempValue::Reg(right)) => {
                             match regmap.get_any_free_register() {
                                 Some(left) => {
                                     regmap.insert(left, *lhs);
@@ -568,17 +581,19 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                                 None => todo!(),
                             }
                         }
-                        (TempLoc::Reg(left), TempLoc::Mem(right)) => {
+                        (TempValue::Reg(left), TempValue::Mem(right)) => {
                             assembler.mov_reg_from_mem(left, Register::RBP, right);
                         }
-                        (TempLoc::Mem(left), TempLoc::Reg(right)) => {
+                        (TempValue::Mem(left), TempValue::Reg(right)) => {
                             assembler.mov_to_mem(right, Register::RBP, left);
                         }
-                        (TempLoc::Mem(_), TempLoc::Mem(_)) => todo!(),
-                        (TempLoc::None, TempLoc::Mem(_)) => todo!(),
-                        (_, TempLoc::None) => unreachable!(),
-                        (TempLoc::Flags(_), _) => unreachable!(),
-                        (_, TempLoc::Flags(_)) => todo!(),
+                        (TempValue::Mem(left), TempValue::Mem(right)) => {
+                            todo!()
+                        }
+                        (TempValue::None, TempValue::Mem(_)) => todo!(),
+                        (_, TempValue::None) => unreachable!(),
+                        (TempValue::Flags(_), _) => unreachable!(),
+                        (_, TempValue::Flags(_)) => todo!(),
                     }
                 }
                 Instruction::Return(value) => {
@@ -595,14 +610,14 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                         } => todo!(),
                         Value::MemberAccess => todo!(),
                         Value::Temporary(index) => match temp_locations[*index] {
-                            TempLoc::Reg(reg) => {
+                            TempValue::Reg(reg) => {
                                 if reg != Register::RAX {
                                     assembler.mov_reg(Register::RAX, reg);
                                 }
                             }
-                            TempLoc::Mem(_) => todo!(),
-                            TempLoc::None => unreachable!(),
-                            TempLoc::Flags(_) => todo!(),
+                            TempValue::Mem(_) => todo!(),
+                            TempValue::None => unreachable!(),
+                            TempValue::Flags(_) => todo!(),
                         },
                         // Value::Call(_, values) => todo!(),
                         Value::Variable(var) => todo!(),
@@ -614,18 +629,18 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                 Instruction::AssignVar { var, temp } => {
                     let to = vars[*var].frame_pos;
                     match temp_locations[*temp] {
-                        TempLoc::Reg(from) => {
+                        TempValue::Reg(from) => {
                             assembler.mov_to_mem(from, Register::RBP, to);
                         }
-                        TempLoc::Mem(from) => match regmap.get_any_free_register() {
+                        TempValue::Mem(from) => match regmap.get_any_free_register() {
                             Some(reg) => {
                                 assembler.mov_reg_from_mem(reg, Register::RBP, from);
                                 assembler.mov_to_mem(reg, Register::RBP, to);
                             }
                             None => todo!(),
                         },
-                        TempLoc::None => unreachable!(),
-                        TempLoc::Flags(op) => {
+                        TempValue::None => unreachable!(),
+                        TempValue::Flags(op) => {
                             assembler.set_mem(op, Register::RBP, to);
                         }
                     }
@@ -635,10 +650,10 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
                 }
                 Instruction::JmpLabelIfNot { label, cond } => {
                     let jmp_cond = match temp_locations[*cond] {
-                        TempLoc::Reg(register) => todo!(),
-                        TempLoc::Mem(_) => todo!(),
-                        TempLoc::None => unreachable!(),
-                        TempLoc::Flags(bool_op) => match bool_op {
+                        TempValue::Reg(register) => todo!(),
+                        TempValue::Mem(_) => todo!(),
+                        TempValue::None => unreachable!(),
+                        TempValue::Flags(bool_op) => match bool_op {
                             BoolOp::Equal => JmpCond::NotEqual,
                             BoolOp::Larger => JmpCond::LessEqual,
                             BoolOp::Smaller => JmpCond::GreaterEqual,
@@ -826,7 +841,7 @@ pub fn compile_elf_object(ir: &IRGen, out_file: &str) {
 
 fn arithmetic_int(
     assembler: &mut Assembler,
-    temp_locations: &mut Vec<TempLoc>,
+    temp_locations: &mut Vec<TempValue>,
     regmap: &mut RegMap,
     op: &ArithmeticOp,
     lhs: &usize,
@@ -834,7 +849,7 @@ fn arithmetic_int(
     result: &usize,
 ) {
     match (temp_locations[*lhs], temp_locations[*rhs]) {
-        (TempLoc::Reg(left), TempLoc::Reg(right)) => {
+        (TempValue::Reg(left), TempValue::Reg(right)) => {
             match op {
                 ArithmeticOp::Add => assembler.add(left, right),
                 ArithmeticOp::Sub => assembler.sub(left, right),
@@ -842,33 +857,33 @@ fn arithmetic_int(
                 ArithmeticOp::Div => todo!(),
             }
 
-            temp_locations[*lhs] = TempLoc::None;
-            temp_locations[*rhs] = TempLoc::None;
-            temp_locations[*result] = TempLoc::Reg(left);
+            temp_locations[*lhs] = TempValue::None;
+            temp_locations[*rhs] = TempValue::None;
+            temp_locations[*result] = TempValue::Reg(left);
         }
-        (TempLoc::Reg(left), TempLoc::Mem(right)) => {
+        (TempValue::Reg(left), TempValue::Mem(right)) => {
             reg_mem_op(assembler, lhs, rhs, result, left, right, op, temp_locations);
         }
-        (TempLoc::Mem(left), TempLoc::Reg(right)) => {
+        (TempValue::Mem(left), TempValue::Reg(right)) => {
             match op {
                 ArithmeticOp::Add => {
                     assembler.add_mem_reg(Register::RBP, left, right);
-                    temp_locations[*result] = TempLoc::Mem(left);
+                    temp_locations[*result] = TempValue::Mem(left);
                 }
                 ArithmeticOp::Sub => {
                     assembler.sub_mem_reg(Register::RBP, left, right);
-                    temp_locations[*result] = TempLoc::Mem(left);
+                    temp_locations[*result] = TempValue::Mem(left);
                 }
                 ArithmeticOp::Mul => {
                     assembler.imul_mem(right, Register::RBP, left);
-                    temp_locations[*result] = TempLoc::Reg(right);
+                    temp_locations[*result] = TempValue::Reg(right);
                 }
                 ArithmeticOp::Div => todo!(),
             }
-            temp_locations[*lhs] = TempLoc::None;
-            temp_locations[*rhs] = TempLoc::None;
+            temp_locations[*lhs] = TempValue::None;
+            temp_locations[*rhs] = TempValue::None;
         }
-        (TempLoc::Mem(left), TempLoc::Mem(right)) => {
+        (TempValue::Mem(left), TempValue::Mem(right)) => {
             match regmap.get_any_free_register() {
                 //TODO: Force
                 Some(reg) => {
@@ -880,10 +895,10 @@ fn arithmetic_int(
                 None => todo!(),
             }
         }
-        (TempLoc::None, loc) => unreachable!("{} {} {:?}", lhs, rhs, loc),
-        (loc, TempLoc::None) => unreachable!("{} {} {:?}", lhs, rhs, loc),
-        (TempLoc::Flags(_), loc) => unreachable!("{} {} {:?}", lhs, rhs, loc),
-        (loc, TempLoc::Flags(_)) => unreachable!("{} {} {:?}", lhs, rhs, loc),
+        (TempValue::None, loc) => unreachable!("{} {} {:?}", lhs, rhs, loc),
+        (loc, TempValue::None) => unreachable!("{} {} {:?}", lhs, rhs, loc),
+        (TempValue::Flags(_), loc) => unreachable!("{} {} {:?}", lhs, rhs, loc),
+        (loc, TempValue::Flags(_)) => unreachable!("{} {} {:?}", lhs, rhs, loc),
     }
 }
 
@@ -914,11 +929,11 @@ fn call_function(
     values: &[Value],
     assembler: &mut Assembler,
     call_patches: &mut Vec<CallPatch>,
-    temp_locations: &mut Vec<TempLoc>,
+    temp_locations: &mut Vec<TempValue>,
     vars: &[Variable],
     regmap: &mut RegMap,
     stack_size: &mut i32,
-) -> TempLoc {
+) -> TempValue {
     let (func, external) = ir.parser.get_function(ident).unwrap();
     let classes: Vec<ArgumentClass> = func
         .arguments
@@ -988,13 +1003,13 @@ fn call_function(
 
     let class = classify(ir, &func.return_type);
     match class {
-        ArgumentClass::Integer => TempLoc::Reg(Register::RAX),
+        ArgumentClass::Integer => TempValue::Reg(Register::RAX),
         ArgumentClass::SSE => todo!(),
         ArgumentClass::SSEUP => todo!(),
         ArgumentClass::X87 => todo!(),
         ArgumentClass::X87UP => todo!(),
         ArgumentClass::ComplexX87 => todo!(),
-        ArgumentClass::NoClass => TempLoc::None,
+        ArgumentClass::NoClass => TempValue::None,
         ArgumentClass::Memory => todo!(),
         ArgumentClass::Struct(items) => todo!(),
     }

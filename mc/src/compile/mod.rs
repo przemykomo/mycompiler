@@ -1152,15 +1152,3 @@ enum ArgumentClass {
     Struct(Vec<ArgumentClass>), // Utility
 }
 
-pub(crate) fn sizeof(data_type: &DataType) -> usize {
-    match data_type {
-        DataType::I64 => 8,
-        DataType::Char => todo!(),
-        DataType::Array { data_type, size } => todo!(),
-        DataType::Pointer(data_type) => todo!(),
-        DataType::Boolean => 1,
-        DataType::Void => todo!(),
-        DataType::F32 => todo!(),
-        DataType::Struct(identifier_spanned) => todo!(),
-    }
-}

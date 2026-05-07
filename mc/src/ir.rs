@@ -1,12 +1,11 @@
 #![allow(warnings)]
 use std::fmt::{Debug, Display, Write};
-use std::usize;
+use std::thread::scope;
 
 use crate::ast::{
     ArithmeticOp, BinaryOp, BoolOp, Expression, ExpressionSpanned, IdentifierSpanned, Statement,
     UnaryOperator,
 };
-use crate::compile;
 use crate::parser::Parser;
 
 use crate::tokenizer::Error;
@@ -30,21 +29,21 @@ impl<'a, T: Display> Display for List<'a, T> {
     }
 }
 
-#[derive(Debug)]
-pub enum Value {
-    ImmediateInt(i64),
-    ImmediateFloat(f32),
-    ImmediateString(String),
-    StructLiteral(Vec<Value>),
-    ArrayAccess {
-        var_index: usize,
-        array_index: Box<Value>,
-    },
-    Variable(usize),
-    MemberAccess,
-    Temporary(usize),
-    // Call(String, Vec<Value>),
-}
+// #[derive(Debug)]
+// pub enum Value {
+//     ImmediateInt(i64),
+//     ImmediateFloat(f32),
+//     ImmediateString(String),
+//     StructLiteral(Vec<Value>),
+//     ArrayAccess {
+//         var_index: usize,
+//         array_index: Box<Value>,
+//     },
+//     Variable(usize),
+//     MemberAccess,
+//     Temporary(usize),
+//     // Call(String, Vec<Value>),
+// }
 
 #[derive(Debug)]
 pub struct Variable {
@@ -54,6 +53,7 @@ pub struct Variable {
     pub argument: bool,
     pub frame_pos: i32,
     pub reachable: bool,
+    pub ptr: usize,
 }
 
 pub struct IRGen<'a> {
@@ -61,6 +61,7 @@ pub struct IRGen<'a> {
     pub errors: Vec<Error>,
     pub functions: Vec<IRFunc>,
     pub label_count: usize,
+    pub inst_ids: usize,
 }
 
 #[derive(Debug)]
@@ -81,53 +82,51 @@ impl Display for IRFunc {
 }
 
 #[derive(Debug)]
-enum IRType {
-    I64,
-    F32,
-}
-
-#[derive(Debug)]
-pub struct TempVar {
-    ir_type: IRType, //TODO: I might remove the IR types entirely
+pub enum IRType {
+    i8,
+    // i16,
+    // i32,
+    i64,
+    f32,
+    Void,
 }
 
 #[derive(Debug)]
 pub struct Scope {
     pub vars: Vec<Variable>,
-    pub temps: Vec<TempVar>,
-    pub instructions: Vec<Instruction>,
-    pub frame_size: i32,
+    pub instructions: Vec<IRInstruction>,
+    // pub frame_size: i32,
 }
 
 impl<'a> Scope {
-    fn temp(&mut self, ir_type: IRType) -> usize {
-        self.temps.push(TempVar { ir_type });
-        self.temps.len() - 1
-    }
+    // fn temp(&mut self, ir_type: IRType) -> usize {
+    //     self.temps.push(TempVar { ir_type });
+    //     self.temps.len() - 1
+    // }
 
-    fn move_to_temp(&'a mut self, val: Value) -> usize {
-        let temp = match &val {
-            Value::ImmediateInt(val) => {
-                // let temp = self.temp(IRType::I64);
-                // self.instructions.push(Instruction::LoadInt(temp, val));
-                // temp
-                self.temp(IRType::I64)
-            }
-            Value::ImmediateFloat(_) => self.temp(IRType::F32),
-            Value::ImmediateString(_) => self.temp(IRType::I64),
-            Value::StructLiteral(values) => self.temp(IRType::I64),
-            Value::ArrayAccess {
-                var_index,
-                array_index,
-            } => self.temp(IRType::I64),
-            Value::MemberAccess => self.temp(IRType::I64),
-            Value::Temporary(temp_var) => return *temp_var,
-            // Value::Call(_, values) => self.temp(IRType::I64),
-            Value::Variable(_) => self.temp(IRType::I64),
-        };
-        self.instructions.push(Instruction::LoadValue(temp, val));
-        temp
-    }
+    // fn move_to_temp(&'a mut self, val: Value) -> usize {
+    //     let temp = match &val {
+    //         Value::ImmediateInt(val) => {
+    //             // let temp = self.temp(IRType::I64);
+    //             // self.instructions.push(Instruction::LoadInt(temp, val));
+    //             // temp
+    //             self.temp(IRType::i64)
+    //         }
+    //         Value::ImmediateFloat(_) => self.temp(IRType::f32),
+    //         Value::ImmediateString(_) => self.temp(IRType::i64),
+    //         Value::StructLiteral(values) => self.temp(IRType::i64),
+    //         Value::ArrayAccess {
+    //             var_index,
+    //             array_index,
+    //         } => self.temp(IRType::i64),
+    //         Value::MemberAccess => self.temp(IRType::i64),
+    //         Value::Temporary(temp_var) => return *temp_var,
+    //         // Value::Call(_, values) => self.temp(IRType::I64),
+    //         Value::Variable(_) => self.temp(IRType::i64),
+    //     };
+    //     self.instructions.push(Instruction::LoadValue(temp, val));
+    //     temp
+    // }
 
     fn truncate_reachable_vars(&mut self, starting: usize) {
         for var in &mut self.vars[starting..] {
@@ -136,49 +135,64 @@ impl<'a> Scope {
     }
 }
 
+// https://gist.github.com/pizlonator/cf1e72b8600b1437dda8153ea3fdb963
 #[derive(Debug)]
-pub enum Instruction {
-    ArithmeticInt {
+pub struct IRInstruction {
+    pub id: usize,
+    pub r#type: IRType,
+    pub operation: Operation,
+    // Input arguments to this instruction being IDs of some previous instructions
+    //TODO: Just move this into Operation?
+    // pub args: [usize; 2],
+    // pub side_effects
+}
+
+#[derive(Debug)]
+pub enum Operation {
+    ConstInt(i64),
+    ConstFloat(f32),
+    Arithmetic {
         op: ArithmeticOp,
-        lhs: usize,
-        rhs: usize,
-        result: usize,
-    },
-    ArithmeticFloat {
-        op: ArithmeticOp,
-        lhs: usize,
-        rhs: usize,
-        result: usize,
+        left: usize,
+        right: usize,
     },
     Comparison {
         op: BoolOp,
-        lhs: usize,
-        rhs: usize,
-        result: usize,
+        left: usize,
+        right: usize,
     },
-    LoadValue(usize, Value),
-    // LoadInt(usize, i64),
-    // LoadFloat(usize, f32),
-    Call {
-        ident: String,
-        values: Vec<Value>,
-        result: usize,
-    },
-    AssignTemp {
-        lhs: usize,
-        rhs: usize,
-    },
-    AssignVar {
-        var: usize,
-        temp: usize,
-    },
-    Return(Value),
+    // TODO
+    // Call {
+    //     ident: String,
+    //     values: Vec<usize>,
+    // },
+    Return(usize, usize),
     Label(usize),
-    JmpLabelIfNot {
-        label: usize,
+    JumpLabelIfNot {
         cond: usize,
+        label: usize,
     },
-    Jmp(usize),
+    JumpLabel(usize),
+
+    /// Set a "Static Single Use" shadow variable to be used with a Phi later
+    /// Used in conditional blocks where we might assign a value depending on some condition
+    Upsilon {
+        temp: usize,
+        shadow: usize,
+    },
+    /// Get the shadow variable into the SSA result
+    Phi(usize),
+
+    /// Allocates X bytes (or pass a type?) on the stack and returns an i64 ptr
+    AllocStack(usize),
+    Store {
+        ptr: usize,
+        value: usize,
+    }, // [ptr, value]
+    Load {
+        ptr: usize,
+    },
+    // GetArgument
 }
 
 impl<'a> IRGen<'a> {
@@ -188,30 +202,29 @@ impl<'a> IRGen<'a> {
             errors: Vec::new(),
             functions: Vec::new(),
             label_count: 0,
+            inst_ids: 1,
         }
     }
 
     pub fn generate_ir(&mut self) {
-        //Since I don't know the structs alignments and the calling convention,
-        //all operations in IR must operate on struct members, not the memory directly.
         for function in &self.parser.functions {
             let mut vars: Vec<Variable> = Vec::new();
             for arg in &function.prototype.arguments {
-                vars.push(Variable {
-                    ident: arg.0.clone(),
-                    data_type: arg.1.clone(),
-                    initialized: true,
-                    argument: true,
-                    frame_pos: 0, //TODO
-                    reachable: true,
-                });
+                todo!();
+                // vars.push(Variable {
+                //     ident: arg.0.clone(),
+                //     data_type: arg.1.clone(),
+                //     initialized: true,
+                //     argument: true,
+                //     frame_pos: 0, //TODO
+                //     reachable: true,
+                // });
             }
 
             let mut scope = Scope {
                 vars,
-                temps: Vec::new(),
                 instructions: Vec::new(),
-                frame_size: 0,
+                // frame_size: 0,
             };
 
             let mut current_frame_size = 0;
@@ -251,36 +264,54 @@ impl<'a> IRGen<'a> {
                 let label = self.alloc_label();
                 let else_end_label = else_scope.as_ref().map(|x| self.alloc_label());
 
-                if let Some((value, data_type)) = condition {
+                if let Some((cond, data_type)) = condition {
                     self.err_if_mismatched(
                         &expression.as_ref().unwrap().span,
                         data_type,
                         DataType::Boolean,
                     );
-                    let cond = scope.move_to_temp(value);
-                    scope
-                        .instructions
-                        .push(Instruction::JmpLabelIfNot { label, cond });
+                    scope.instructions.push(IRInstruction {
+                        id: self.alloc_inst(),
+                        r#type: IRType::Void,
+                        operation: Operation::JumpLabelIfNot {
+                            cond: cond[0],
+                            label,
+                        },
+                    });
                 }
-
                 self.subscope(scope, return_type, current_frame_size, if_scope);
 
                 if let Some(label) = else_end_label {
-                    scope.instructions.push(Instruction::Jmp(label));
+                    scope.instructions.push(IRInstruction {
+                        id: self.alloc_inst(),
+                        r#type: IRType::Void,
+                        operation: Operation::JumpLabel(label),
+                    });
                 }
-                scope.instructions.push(Instruction::Label(label));
+
+                scope.instructions.push(IRInstruction {
+                    id: self.alloc_inst(),
+                    r#type: IRType::Void,
+                    operation: Operation::Label(label),
+                });
 
                 if let Some(else_scope) = else_scope {
                     self.subscope(scope, return_type, current_frame_size, else_scope);
+                    scope.instructions.push(IRInstruction {
+                        id: self.alloc_inst(),
+                        r#type: IRType::Void,
+                        operation: Operation::Label(else_end_label.unwrap()),
+                    });
                 }
-                scope
-                    .instructions
-                    .push(Instruction::Label(else_end_label.unwrap()));
             }
             Statement::Return(expr) => {
                 if let Some((value, expr_type)) = self.compile_expression(expr, scope) {
                     self.err_if_mismatched(&expr.span, return_type.clone(), expr_type.clone());
-                    scope.instructions.push(Instruction::Return(value));
+                    scope.instructions.push(IRInstruction {
+                        id: self.alloc_inst(),
+                        r#type: IRType::Void,
+                        operation: Operation::Return(value[0], 0), //TODO
+                    });
                 }
             }
             Statement::Expression(expr) => {
@@ -292,29 +323,44 @@ impl<'a> IRGen<'a> {
             } => {
                 let label_begin = self.alloc_label();
                 let label_end = self.alloc_label();
-                scope.instructions.push(Instruction::Label(label_begin));
+                scope.instructions.push(IRInstruction {
+                    id: self.alloc_inst(),
+                    r#type: IRType::Void,
+                    operation: Operation::Label(label_begin),
+                });
 
                 let condition = expression
                     .as_ref()
                     .map(|expr| self.compile_expression(expr, scope))
                     .flatten();
 
-                if let Some((value, data_type)) = condition {
+                if let Some((cond, data_type)) = condition {
                     self.err_if_mismatched(
                         &expression.as_ref().unwrap().span,
                         data_type,
                         DataType::Boolean,
                     );
-                    let cond = scope.move_to_temp(value);
-                    scope.instructions.push(Instruction::JmpLabelIfNot {
-                        label: label_end,
-                        cond,
+                    scope.instructions.push(IRInstruction {
+                        id: self.alloc_inst(),
+                        r#type: IRType::Void,
+                        operation: Operation::JumpLabelIfNot {
+                            cond: cond[0],
+                            label: label_end,
+                        },
                     });
                 }
 
                 self.subscope(scope, return_type, current_frame_size, while_scope);
-                scope.instructions.push(Instruction::Jmp(label_begin));
-                scope.instructions.push(Instruction::Label(label_end));
+                scope.instructions.push(IRInstruction {
+                    id: self.alloc_inst(),
+                    r#type: IRType::Void,
+                    operation: Operation::JumpLabel(label_begin),
+                });
+                scope.instructions.push(IRInstruction {
+                    id: self.alloc_inst(),
+                    r#type: IRType::Void,
+                    operation: Operation::Label(label_end),
+                });
             }
             Statement::For {
                 inital_statement,
@@ -327,21 +373,34 @@ impl<'a> IRGen<'a> {
                 expression,
                 data_type,
             } => {
+                let ptr = self.alloc_inst();
+                scope.instructions.push(IRInstruction {
+                    id: ptr,
+                    r#type: IRType::i64,
+                    operation: Operation::AllocStack(sizeof(data_type)),
+                });
+
                 let initialized = if let Some(expr) = expression {
                     if let Some((value, expr_type)) = self.compile_expression(expr, scope) {
                         self.err_if_mismatched(&expr.span, data_type.clone(), expr_type);
                         let var = scope.vars.len();
-                        let temp = scope.move_to_temp(value);
-                        scope
-                            .instructions
-                            .push(Instruction::AssignVar { var, temp });
+
+                        scope.instructions.push(IRInstruction {
+                            id: self.alloc_inst(),
+                            r#type: IRType::Void,
+                            operation: Operation::Store {
+                                ptr,
+                                value: value[0],
+                            },
+                            //TODO: handle large structs
+                        });
                     }
                     true
                 } else {
                     false
                 };
 
-                *current_frame_size += compile::sizeof(data_type) as i32;
+                *current_frame_size += sizeof(data_type) as i32;
                 scope.vars.push(Variable {
                     ident: ident.clone(),
                     data_type: data_type.clone(),
@@ -349,6 +408,7 @@ impl<'a> IRGen<'a> {
                     argument: false,
                     frame_pos: -*current_frame_size,
                     reachable: true,
+                    ptr,
                 });
             }
         }
@@ -367,7 +427,7 @@ impl<'a> IRGen<'a> {
             self.compile_statement(statement, scope, return_type, current_frame_size);
         }
 
-        scope.frame_size = scope.frame_size.max(*current_frame_size);
+        // scope.frame_size = scope.frame_size.max(*current_frame_size);
         *current_frame_size = outer_scope_frame;
         scope.truncate_reachable_vars(outer_vars_len);
     }
@@ -385,25 +445,54 @@ impl<'a> IRGen<'a> {
         &mut self,
         expr: &ExpressionSpanned,
         scope: &mut Scope,
-    ) -> Option<(Value, DataType)> {
+    ) -> Option<(Vec<usize>, DataType)> {
         match &expr.expression {
-            Expression::IntLiteral(val) => Some((Value::ImmediateInt(*val), DataType::I64)),
+            Expression::IntLiteral(val) => {
+                let id = self.alloc_inst();
+                scope.instructions.push(IRInstruction {
+                    id,
+                    r#type: IRType::i64,
+                    operation: Operation::ConstInt(*val),
+                });
+                Some((vec![id], DataType::I64))
+            }
             Expression::CharacterLiteral(val) => {
-                Some((Value::ImmediateInt(*val as i64), DataType::Char))
+                let id = self.alloc_inst();
+                scope.instructions.push(IRInstruction {
+                    id,
+                    r#type: IRType::i8,
+                    operation: Operation::ConstInt(*val as i64),
+                });
+                Some((vec![id], DataType::Char))
             }
             Expression::BoolLiteral(val) => {
-                Some((Value::ImmediateInt(*val as i64), DataType::Boolean))
+                let id = self.alloc_inst();
+                scope.instructions.push(IRInstruction {
+                    id,
+                    r#type: IRType::i8,
+                    operation: Operation::ConstInt(*val as i64),
+                });
+                Some((vec![id], DataType::Boolean))
             }
             Expression::FloatLiteral(val) => {
-                Some((Value::ImmediateFloat(val.clone()), DataType::F32))
+                let id = self.alloc_inst();
+                scope.instructions.push(IRInstruction {
+                    id,
+                    r#type: IRType::f32,
+                    operation: Operation::ConstFloat(*val),
+                });
+                Some((vec![id], DataType::F32))
             }
-            Expression::StringLiteral(val) => Some((
-                Value::ImmediateString(val.clone()),
-                DataType::Array {
-                    data_type: Box::new(DataType::Char),
-                    size: val.len() as i32,
-                },
-            )),
+            Expression::StringLiteral(val) => {
+                todo!();
+                // (
+                //     Value::ImmediateString(val.clone()),
+                //     DataType::Array {
+                //         data_type: Box::new(DataType::Char),
+                //         size: val.len() as i32,
+                //     },
+                // )
+            }
             Expression::StructLiteral { ident, members } => {
                 let Some(struct_dec) = self
                     .parser
@@ -418,7 +507,7 @@ impl<'a> IRGen<'a> {
                     return None;
                 };
 
-                let mut values: Vec<Value> = Vec::new();
+                let mut values: Vec<usize> = Vec::new();
 
                 for (i, (ident, expr)) in members.iter().enumerate() {
                     let m = struct_dec.members.get(i);
@@ -431,9 +520,12 @@ impl<'a> IRGen<'a> {
                             return None;
                         }
                         if let Some(expr) = expr {
-                            if let Some((value, data_type)) = self.compile_expression(expr, scope) {
+                            if let Some((mut value, data_type)) =
+                                self.compile_expression(expr, scope)
+                            {
                                 self.err_if_mismatched(&expr.span, m.data_type.clone(), data_type);
-                                values.push(value);
+                                // Hopefully flattening nested structs makes it easier
+                                values.append(&mut value);
                             }
                         }
                     } else {
@@ -457,10 +549,7 @@ impl<'a> IRGen<'a> {
                     return None;
                 }
 
-                Some((
-                    Value::StructLiteral(values),
-                    DataType::Struct(struct_dec.ident.clone()),
-                ))
+                Some((values, DataType::Struct(struct_dec.ident.clone())))
             }
             Expression::FunctionCall(call) => {
                 let Some((func, _)) = self.parser.get_function(&call.ident.ident) else {
@@ -471,23 +560,15 @@ impl<'a> IRGen<'a> {
                     return None;
                 };
 
-                let mut values: Vec<Value> = Vec::new();
+                let mut values: Vec<usize> = Vec::new();
                 for (i, expr) in call.arguments.iter().enumerate() {
                     let arg = func.arguments.get(i);
                     let expr_result = self.compile_expression(expr, scope);
-                    if let (Some((_ident, arg_type)), Some((value, data_type))) = (arg, expr_result)
+                    if let (Some((_ident, arg_type)), Some((mut value, data_type))) =
+                        (arg, expr_result)
                     {
                         self.err_if_mismatched(&expr.span, arg_type.clone(), data_type);
-                        // if *arg_type != data_type {
-                        //     self.errors.push(Error {
-                        //         span: expr.span,
-                        //         msg: format!(
-                        //             "Mismatched types. Expected `{arg_type:?}`, got `{data_type:?}`."
-                        //         ),
-                        //     });
-                        // } else {
-                        values.push(value);
-                        // }
+                        values.append(&mut value);
                     }
                 }
 
@@ -503,36 +584,50 @@ impl<'a> IRGen<'a> {
                     return None;
                 }
 
-                let result = scope.temp(IRType::I64);
-                scope.instructions.push(Instruction::Call {
-                    ident: call.ident.ident.clone(),
-                    values,
-                    result: result,
-                });
-
-                Some((Value::Temporary(result), func.return_type.clone()))
+                todo!("Function calls IR gen");
+                // let result = self.alloc_inst();
+                // scope.instructions.push(Instruction {
+                //     id: result,
+                //     r#type: (),
+                //     operation: Operation::Call,
+                // });
+                //
+                // Some((vec![result], func.return_type.clone()))
             }
-            Expression::Identifier(ident) => self.use_var(scope, ident, |(var_index, var)| {
-                Some((Value::Variable(var_index), var.data_type.clone()))
-            }),
+            Expression::Identifier(ident) => {
+                let result = self.alloc_inst();
+                self.use_var(scope, ident, |(instructions, errors, var_index, var)| {
+                    instructions.push(IRInstruction {
+                        id: result,
+                        r#type: IRType::i64, //TODO
+                        operation: Operation::Load { ptr: var.ptr },
+                    });
+                    Some((vec![result], var.data_type.clone()))
+                })
+            }
             Expression::ArraySubscript { ident, element } => {
                 let element = self.compile_expression(element, scope);
-                self.use_var(scope, ident, |(var_index, var)| {
+                self.use_var(scope, ident, |(instructions, errors, var_index, var)| {
                     let DataType::Array { data_type, size } = &var.data_type else {
+                        errors.push(Error {
+                            span: ident.span,
+                            msg: format!("Expected an array, got {:?}.", &var.data_type),
+                        });
                         return None;
                     };
 
-                    if let Some((value, data_type)) = element {
-                        Some((
-                            Value::ArrayAccess {
-                                var_index,
-                                array_index: Box::new(value),
-                            },
-                            data_type.clone(),
-                        ))
-                    } else {
-                        None
-                    }
+                    todo!();
+                    // if let Some((value, data_type)) = element {
+                    //     Some((
+                    //         Value::ArrayAccess {
+                    //             var_index,
+                    //             array_index: Box::new(value),
+                    //         },
+                    //         data_type.clone(),
+                    //     ))
+                    // } else {
+                    //     None
+                    // }
                 })
             }
             Expression::Binary {
@@ -557,56 +652,54 @@ impl<'a> IRGen<'a> {
 
                 match left.1 {
                     DataType::I64 => {
-                        if let (Value::ImmediateInt(lhs), Value::ImmediateInt(rhs)) =
-                            (&left.0, &right.0)
-                        {
-                            //TODO: move this into an optimization pass
-                            match op {
-                                BinaryOp::Arithmetic(op) => {
-                                    return Some((
-                                        Value::ImmediateInt(op.perform(*lhs, *rhs)),
-                                        left.1,
-                                    ));
-                                }
-                                BinaryOp::Bool(op) => {
-                                    return Some((
-                                        Value::ImmediateInt(op.perform(*lhs, *rhs) as i64),
-                                        left.1,
-                                    ));
-                                }
-                                BinaryOp::Assign => {}
-                                BinaryOp::MemberAccess => {}
-                            }
-                        }
-                        let lhs = scope.move_to_temp(left.0);
-                        let rhs = scope.move_to_temp(right.0);
-                        let result = scope.temp(IRType::I64);
                         match op {
                             BinaryOp::Arithmetic(op) => {
-                                scope.instructions.push(Instruction::ArithmeticInt {
-                                    op: *op,
-                                    lhs,
-                                    rhs,
-                                    result,
+                                let result = self.alloc_inst();
+                                scope.instructions.push(IRInstruction {
+                                    id: result,
+                                    r#type: IRType::i64,
+                                    operation: Operation::Arithmetic {
+                                        op: *op,
+                                        left: left.0[0],
+                                        right: right.0[0],
+                                    },
                                 });
+                                Some((vec![result], DataType::I64))
                             }
                             BinaryOp::Bool(op) => {
-                                scope.instructions.push(Instruction::Comparison {
-                                    op: *op,
-                                    lhs,
-                                    rhs,
-                                    result,
+                                let result = self.alloc_inst();
+                                scope.instructions.push(IRInstruction {
+                                    id: result,
+                                    r#type: IRType::i8,
+                                    operation: Operation::Comparison {
+                                        op: *op,
+                                        left: left.0[0],
+                                        right: right.0[0],
+                                    },
                                 });
-                                return Some((Value::Temporary(result), DataType::Boolean));
+                                Some((vec![result], DataType::Boolean))
                             }
                             BinaryOp::Assign => {
-                                scope
-                                    .instructions
-                                    .push(Instruction::AssignTemp { lhs, rhs });
+                                //TODO: large structs
+                                let value = self.alloc_inst();
+                                scope.instructions.push(IRInstruction {
+                                    id: value,
+                                    r#type: IRType::i64,
+                                    operation: Operation::Load { ptr: right.0[0] },
+                                });
+                                let result = self.alloc_inst();
+                                scope.instructions.push(IRInstruction {
+                                    id: result,
+                                    r#type: IRType::Void,
+                                    operation: Operation::Store {
+                                        ptr: left.0[0],
+                                        value,
+                                    },
+                                });
+                                Some((vec![result], DataType::I64))
                             }
                             BinaryOp::MemberAccess => todo!(),
                         }
-                        return Some((Value::Temporary(result), DataType::I64));
                     }
                     DataType::Char => todo!(),
                     DataType::Array { data_type, size } => todo!(),
@@ -640,8 +733,10 @@ impl<'a> IRGen<'a> {
         &mut self,
         scope: &mut Scope,
         ident: &IdentifierSpanned,
-        f: impl FnOnce((usize, &Variable)) -> Option<(Value, DataType)>,
-    ) -> Option<(Value, DataType)> {
+        f: impl FnOnce(
+            (&mut Vec<IRInstruction>, &mut Vec<Error>, usize, &Variable),
+        ) -> Option<(Vec<usize>, DataType)>,
+    ) -> Option<(Vec<usize>, DataType)> {
         let mut found_unreachable = None;
         if let Some((var_index, var)) = scope
             .vars
@@ -671,7 +766,7 @@ impl<'a> IRGen<'a> {
                     ),
                 });
             }
-            f((var_index, var))
+            f((&mut scope.instructions, &mut self.errors, var_index, var))
         } else {
             self.errors.push(Error {
                 span: ident.span,
@@ -685,5 +780,24 @@ impl<'a> IRGen<'a> {
         let l = self.label_count;
         self.label_count += 1;
         l
+    }
+
+    fn alloc_inst(&mut self) -> usize {
+        let l = self.inst_ids;
+        self.inst_ids += 1;
+        l
+    }
+}
+
+pub fn sizeof(data_type: &DataType) -> usize {
+    match data_type {
+        DataType::I64 => 8,
+        DataType::Char => todo!(),
+        DataType::Array { data_type, size } => todo!(),
+        DataType::Pointer(data_type) => todo!(),
+        DataType::Boolean => 1,
+        DataType::Void => todo!(),
+        DataType::F32 => todo!(),
+        DataType::Struct(identifier_spanned) => todo!(),
     }
 }

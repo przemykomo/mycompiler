@@ -10,13 +10,11 @@ struct grzybex {
 }
 
 fn myfunc() -> i64 {
-    yes();
     return 0;
 }
 
 public fn main() -> i64 {
     let a: i64 = 5;
     let b: i64 = a - 1;
-    print_num(a, b);
-    return 0;
+    return b;
 }

@@ -16,5 +16,8 @@ fn myfunc() -> i64 {
 public fn main() -> i64 {
     let a: i64 = 5;
     let b: i64 = a - 1;
+    while (b > 3) {
+        b = b - 1;
+    }
     return b;
 }

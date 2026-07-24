@@ -14,6 +14,7 @@ pub mod ast;
 pub mod ir;
 pub mod lower;
 use lower::*;
+pub mod llvm;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -50,8 +51,10 @@ fn main() {
         print!("{}", function);
     }
 
-    let mut lower = Lower::new(&irgen);
-    lower.lower();
+    llvm::run(&irgen, write_file_path);
+
+    // let mut lower = Lower::new(&irgen);
+    // lower.lower();
     // compile::compile_elf_object(&irgen, write_file_path);
 }
 

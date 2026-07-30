@@ -3,6 +3,10 @@ use std::env;
 use std::fs;
 
 mod tokenizer;
+use inkwell::context::Context;
+use inkwell::llvm_sys::core::LLVMContextCreate;
+use inkwell::llvm_sys::core::LLVMDumpModule;
+use inkwell::llvm_sys::prelude::*;
 use ir::IRGen;
 use tokenizer::*;
 
@@ -14,6 +18,8 @@ pub mod ast;
 pub mod ir;
 pub mod lower;
 use lower::*;
+
+use crate::llvm::LLVMGen;
 pub mod llvm;
 
 fn main() {
@@ -40,18 +46,31 @@ fn main() {
 
     print_errors(&parser.errors, &lines, read_file_path);
 
-    let mut irgen = IRGen::new(&parser);
-    irgen.generate_ir();
+    let context = unsafe { LLVMContextCreate() };
+    // let context = Context::create();
+    let mut llvmgen = LLVMGen::new(&parser, context);
+    llvmgen.generate_ir();
 
-    if print_errors(&irgen.errors, &lines, read_file_path) {
+    if print_errors(&llvmgen.errors, &lines, read_file_path) {
         return;
     }
-
-    for function in &irgen.functions {
-        print!("{}", function);
+    unsafe {
+        LLVMDumpModule(llvmgen.module);
     }
+    // llvmgen.module.print_to_stderr();
 
-    llvm::run(&irgen, write_file_path);
+    // let mut irgen = IRGen::new(&parser);
+    // irgen.generate_ir();
+    //
+    // if print_errors(&irgen.errors, &lines, read_file_path) {
+    //     return;
+    // }
+    //
+    // for function in &irgen.functions {
+    //     print!("{}", function);
+    // }
+
+    // llvm::run(&irgen, write_file_path);
 
     // let mut lower = Lower::new(&irgen);
     // lower.lower();

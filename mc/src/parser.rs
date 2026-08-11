@@ -330,10 +330,10 @@ impl Parser<'_> {
     }
 
     fn parse_member_access(&mut self) -> Option<ExpressionSpanned> {
-        let mut lhs = self.parse_expression_atom()?;
+        let mut lhs = self.parse_expression_atom(false)?;
 
         while self.eat(&Token::Period) {
-            let rhs = self.parse_expression_atom()?;
+            let rhs = self.parse_expression_atom(true)?;
             lhs = ExpressionSpanned {
                 span: Span::between(&lhs.span, &rhs.span),
                 expression: Expression::Binary {
@@ -347,7 +347,7 @@ impl Parser<'_> {
         Some(lhs)
     }
 
-    fn parse_expression_atom(&mut self) -> Option<ExpressionSpanned> {
+    fn parse_expression_atom(&mut self, member: bool) -> Option<ExpressionSpanned> {
         let span = self.token.span;
         match &self.token.token {
             Token::Identifier(ident) => {
@@ -402,8 +402,9 @@ impl Parser<'_> {
                         })
                     }
                     Token::CurlyBracketOpen
-                        if !self.restrictions.contains(Restrictions::NO_STRUCT_LITERALS)
-                            || self.is_certainly_not_a_block() =>
+                        if !member
+                            && (!self.restrictions.contains(Restrictions::NO_STRUCT_LITERALS)
+                                || self.is_certainly_not_a_block()) =>
                     {
                         self.next();
                         let mut members = Vec::new();
@@ -441,7 +442,7 @@ impl Parser<'_> {
                     }),
                 }
             }
-            Token::ParenthesisOpen => {
+            Token::ParenthesisOpen if !member => {
                 self.next();
                 let expr = self.parse_expression(0);
                 self.eat_or_err(&Token::ParenthesisClose);
@@ -458,16 +459,16 @@ impl Parser<'_> {
     fn parse_binary_operator(&mut self) -> Option<BinaryOp> {
         use ArithmeticOp::*;
         use BinaryOp::*;
-        use BoolOp::*;
+        use ComparisonOp::*;
         match self.token.token {
             Token::EqualSign => Some(Assign),
-            Token::CompareEqual => Some(Bool(Equal)),
+            Token::CompareEqual => Some(Comparison(Equal)),
             Token::PlusSign => Some(Arithmetic(Add)),
             Token::MultiplySign => Some(Arithmetic(Mul)),
             Token::MinusSign => Some(Arithmetic(Sub)),
             Token::DivisionSign => Some(Arithmetic(Div)),
-            Token::LargerThan => Some(Bool(Larger)),
-            Token::SmallerThan => Some(Bool(Smaller)),
+            Token::LargerThan => Some(Comparison(Larger)),
+            Token::SmallerThan => Some(Comparison(Smaller)),
             Token::Period => Some(MemberAccess),
             _ => None,
         }

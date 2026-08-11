@@ -1,5 +1,7 @@
 use std::fmt::Display;
 
+use inkwell::llvm_sys::LLVMIntPredicate::{self, *};
+
 use crate::tokenizer::*;
 
 #[derive(Debug)]
@@ -54,14 +56,15 @@ impl Display for StructMember {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum UnaryOperator {
     Dereference,
     AddressOf,
     LogicalNot,
-    Negation, // Increment(Box<ExpressionSpanned>),
-              // Decrement(Box<ExpressionSpanned>),
-              // ErrorPropagation
+    Negation,
+    // Increment(Box<ExpressionSpanned>),
+    // Decrement(Box<ExpressionSpanned>),
+    // ErrorPropagation
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -91,27 +94,37 @@ impl ArithmeticOp {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum BoolOp {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ComparisonOp {
     Equal,
     Larger,
     Smaller,
 }
 
-impl BoolOp {
+impl ComparisonOp {
     pub fn perform<T: std::cmp::PartialEq + std::cmp::PartialOrd>(&self, lhs: T, rhs: T) -> bool {
         match self {
-            BoolOp::Equal => lhs == rhs,
-            BoolOp::Larger => lhs > rhs,
-            BoolOp::Smaller => lhs < rhs,
+            ComparisonOp::Equal => lhs == rhs,
+            ComparisonOp::Larger => lhs > rhs,
+            ComparisonOp::Smaller => lhs < rhs,
         }
     }
 }
 
-#[derive(Debug)]
+impl Into<LLVMIntPredicate> for ComparisonOp {
+    fn into(self) -> LLVMIntPredicate {
+        match self {
+            ComparisonOp::Equal => LLVMIntEQ,
+            ComparisonOp::Larger => LLVMIntSGT,
+            ComparisonOp::Smaller => LLVMIntSLT,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub enum BinaryOp {
     Arithmetic(ArithmeticOp),
-    Bool(BoolOp),
+    Comparison(ComparisonOp),
     Assign,
     MemberAccess,
 }
@@ -123,7 +136,7 @@ impl BinaryOp {
         match self {
             Arithmetic(Add) | Arithmetic(Sub) => (7, 8),
             Arithmetic(Mul) | Arithmetic(Div) => (9, 10),
-            Bool(_) => (5, 6),
+            Comparison(_) => (5, 6),
             Assign => (4, 3),
             MemberAccess => (1, 2),
         }
@@ -149,7 +162,7 @@ pub enum Statement {
         scope: Vec<Statement>,
         else_scope: Option<Vec<Statement>>,
     },
-    Return(ExpressionSpanned),
+    Return(ExpressionSpanned), //TODO void return?
     Expression(ExpressionSpanned),
     While {
         expression: Option<ExpressionSpanned>,

@@ -3,11 +3,12 @@ use std::env;
 use std::fs;
 
 mod tokenizer;
-use inkwell::context::Context;
-use inkwell::llvm_sys::core::LLVMContextCreate;
-use inkwell::llvm_sys::core::LLVMDumpModule;
-use inkwell::llvm_sys::prelude::*;
-use ir::IRGen;
+mod typecheck;
+// use inkwell::context::Context;
+// use inkwell::llvm_sys::core::LLVMContextCreate;
+// use inkwell::llvm_sys::core::LLVMDumpModule;
+// use inkwell::llvm_sys::prelude::*;
+// use ir::IRGen;
 use tokenizer::*;
 
 pub mod parser;
@@ -19,8 +20,10 @@ pub mod ir;
 pub mod lower;
 use lower::*;
 
-use crate::llvm::LLVMGen;
-pub mod llvm;
+use crate::typecheck::TypeChecker;
+
+// use crate::llvm::LLVMGen;
+// pub mod llvm;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -44,19 +47,34 @@ fn main() {
     let mut parser = Parser::new(&tokens);
     parser.parse();
 
-    print_errors(&parser.errors, &lines, read_file_path);
-
-    let context = unsafe { LLVMContextCreate() };
-    // let context = Context::create();
-    let mut llvmgen = LLVMGen::new(&parser, context);
-    llvmgen.generate_ir();
-
-    if print_errors(&llvmgen.errors, &lines, read_file_path) {
+    if print_errors(&parser.errors, &lines, &read_file_path) {
         return;
     }
-    unsafe {
-        LLVMDumpModule(llvmgen.module);
+
+    let mut typechecker = TypeChecker {
+        parser: &parser,
+        typed_functions: Vec::new(),
+        errors: Vec::new(),
+    };
+
+    typechecker.typecheck();
+
+    if print_errors(&typechecker.errors, &lines, &read_file_path) {
+        return;
     }
+    dbg!(&typechecker.typed_functions);
+
+    // let context = unsafe { LLVMContextCreate() };
+    // // let context = Context::create();
+    // let mut llvmgen = LLVMGen::new(&parser, context);
+    // llvmgen.generate_ir();
+    //
+    // if print_errors(&llvmgen.errors, &lines, read_file_path) {
+    //     return;
+    // }
+    // unsafe {
+    //     LLVMDumpModule(llvmgen.module);
+    // }
     // llvmgen.module.print_to_stderr();
 
     // let mut irgen = IRGen::new(&parser);

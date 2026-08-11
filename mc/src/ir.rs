@@ -3,7 +3,7 @@ use std::fmt::{Debug, Display, Write};
 use std::thread::scope;
 
 use crate::ast::{
-    ArithmeticOp, BinaryOp, BoolOp, Expression, ExpressionSpanned, IdentifierSpanned, Statement,
+    ArithmeticOp, BinaryOp, ComparisonOp, Expression, ExpressionSpanned, IdentifierSpanned, Statement,
     UnaryOperator,
 };
 use crate::parser::Parser;
@@ -11,7 +11,7 @@ use crate::parser::Parser;
 use crate::tokenizer::Error;
 use crate::tokenizer::{DataType, Span};
 
-struct List<'a, T: Display>(&'a [T]);
+pub struct List<'a, T: Display>(pub &'a [T]);
 
 impl<'a, T: Display> Display for List<'a, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -157,7 +157,7 @@ pub enum Operation {
         right: usize,
     },
     Comparison {
-        op: BoolOp,
+        op: ComparisonOp,
         left: usize,
         right: usize,
     },
@@ -666,7 +666,7 @@ impl<'a> IRGen<'a> {
                                 });
                                 Some((vec![result], DataType::I64))
                             }
-                            BinaryOp::Bool(op) => {
+                            BinaryOp::Comparison(op) => {
                                 let result = self.alloc_inst();
                                 scope.instructions.push(IRInstruction {
                                     id: result,

@@ -4,11 +4,11 @@ use std::fs;
 
 mod tokenizer;
 mod typecheck;
-// use inkwell::context::Context;
-// use inkwell::llvm_sys::core::LLVMContextCreate;
-// use inkwell::llvm_sys::core::LLVMDumpModule;
-// use inkwell::llvm_sys::prelude::*;
-// use ir::IRGen;
+use inkwell::context::Context;
+use inkwell::llvm_sys::core::LLVMContextCreate;
+use inkwell::llvm_sys::core::LLVMDumpModule;
+use inkwell::llvm_sys::prelude::*;
+use ir::IRGen;
 use tokenizer::*;
 
 pub mod parser;
@@ -22,21 +22,21 @@ use lower::*;
 
 use crate::typecheck::TypeChecker;
 
-// use crate::llvm::LLVMGen;
-// pub mod llvm;
+use crate::llvm::LLVMGen;
+pub mod llvm;
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
+    let mut args: Vec<String> = env::args().collect();
 
     if args.len() < 3 {
         panic!("Not enough arguments.");
     }
 
-    let read_file_path = &args[1];
-    let write_file_path = &args[2];
+    let write_file_path = args.remove(2);
+    let read_file_path = args.remove(1);
 
     let contents =
-        fs::read_to_string(read_file_path).expect("Should have been able to read the file.");
+        fs::read_to_string(&read_file_path).expect("Should have been able to read the file.");
     let lines: Vec<&str> = contents.lines().collect();
 
     let tokens = tokenize(&contents);
@@ -62,19 +62,20 @@ fn main() {
     if print_errors(&typechecker.errors, &lines, &read_file_path) {
         return;
     }
-    dbg!(&typechecker.typed_functions);
 
-    // let context = unsafe { LLVMContextCreate() };
-    // // let context = Context::create();
-    // let mut llvmgen = LLVMGen::new(&parser, context);
-    // llvmgen.generate_ir();
-    //
-    // if print_errors(&llvmgen.errors, &lines, read_file_path) {
-    //     return;
-    // }
+    let context = unsafe { LLVMContextCreate() };
+    // let context = Context::create();
+    let mut llvmgen = LLVMGen::new(&typechecker, context);
+    llvmgen.generate_ir();
+
+    if print_errors(&llvmgen.errors, &lines, &read_file_path) {
+        return;
+    }
     // unsafe {
     //     LLVMDumpModule(llvmgen.module);
     // }
+
+    llvmgen.build(write_file_path);
     // llvmgen.module.print_to_stderr();
 
     // let mut irgen = IRGen::new(&parser);

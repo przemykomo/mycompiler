@@ -73,7 +73,7 @@ pub enum TypedStmtKind {
 
 #[derive(Debug)]
 pub struct Variable {
-    ident: IdentifierSpanned,
+    pub ident: IdentifierSpanned,
     pub data_type: DataType,
     initialized: bool, //TODO: remove
     used: bool,
@@ -177,8 +177,9 @@ pub struct TypeChecker<'a> {
 
 #[derive(Debug)]
 pub struct TypedFunc {
-    pub ident: String,
+    pub prototype: FunctionPrototype,
     pub block: TypedBlock,
+    pub scope: Scope,
 }
 
 #[derive(Debug)]
@@ -217,8 +218,9 @@ impl<'a> TypeChecker<'a> {
         );
 
         self.typed_functions.push(TypedFunc {
-            ident: func.prototype.ident.ident.clone(),
+            prototype: func.prototype.clone(),
             block,
+            scope,
         });
     }
 

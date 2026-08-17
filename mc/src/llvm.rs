@@ -296,8 +296,12 @@ impl<'a> LLVMGen<'a> {
                     LLVMPositionBuilderAtEnd(self.builder, end_block);
                 }
                 TypedStmtKind::Return(expr) => {
-                    let value = self.compile_expression(expr, scope);
-                    LLVMBuildRet(self.builder, value);
+                    if let Some(expr) = expr {
+                        let value = self.compile_expression(expr, scope);
+                        LLVMBuildRet(self.builder, value);
+                    } else {
+                        LLVMBuildRetVoid(self.builder);
+                    }
                 }
                 TypedStmtKind::Expression(expr) => {
                     self.compile_expression(expr, scope);

@@ -10,13 +10,14 @@ struct grzybex {
     b: i64
 }
 
-fn myfunc() -> i64 {
-    return 0;
+fn myfunc() {
+    printf("myfunc");
 }
 
 public fn main() -> i64 {
     let str: *char = "aboba";
     let other: *char = "aboba2";
     printf(str);
+    myfunc();
     return 0;
 }

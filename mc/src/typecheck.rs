@@ -7,7 +7,7 @@ use crate::{
     ir::List,
     parser::Parser,
     tokenizer::{DataType, Error, Span},
-    typecheck::BlockReturnActuality::{NeverReturns, SometimesReturns},
+    typecheck::BlockReturnActuality::{AlwaysReturns, NeverReturns, SometimesReturns},
 };
 
 #[derive(Debug)]
@@ -68,7 +68,7 @@ pub enum TypedStmtKind {
         expr: TypedExpr,
         block: TypedBlock,
     },
-    Return(TypedExpr),
+    Return(Option<TypedExpr>),
 }
 
 #[derive(Debug)]
@@ -206,12 +206,27 @@ impl<'a> TypeChecker<'a> {
             });
         }
 
-        let block = self.type_block(
+        let mut block = self.type_block(
             &mut scope,
             &func.body,
             false,
             BlockReturnAbility::MustReturn(func.prototype.return_type.clone()),
         );
+
+        if block.return_actuality != AlwaysReturns {
+            if func.prototype.return_type == DataType::Void {
+                block.statements.push(TypedStatement {
+                    kind: TypedStmtKind::Return(None),
+                    return_actuality: AlwaysReturns,
+                });
+                block.return_actuality = AlwaysReturns;
+            } else {
+                self.errors.push(Error {
+                    span: func.prototype.ident.span,
+                    msg: "Function doesn't always return.".to_owned(),
+                });
+            }
+        }
 
         self.typed_functions.push(TypedFunc {
             prototype: func.prototype.clone(),
@@ -309,7 +324,7 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
 
-                    let kind = TypedStmtKind::Return(expr);
+                    let kind = TypedStmtKind::Return(Some(expr));
                     typed_statements.push(TypedStatement {
                         kind,
                         return_actuality: BlockReturnActuality::AlwaysReturns,

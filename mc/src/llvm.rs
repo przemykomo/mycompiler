@@ -390,7 +390,11 @@ impl<'a> LLVMGen<'a> {
                 TypedExprKind::CharLiteral(_) => todo!(),
                 TypedExprKind::BoolLiteral(_) => todo!(),
                 TypedExprKind::FloatLiteral(_) => todo!(),
-                TypedExprKind::StringLiteral(_) => todo!(),
+                TypedExprKind::StringLiteral(string) => LLVMBuildGlobalString(
+                    self.builder,
+                    CString::new(string.clone()).unwrap().as_ptr(),
+                    c"str".as_ptr(),
+                ),
                 TypedExprKind::Negation(typed_expr) => todo!(),
                 TypedExprKind::Not(typed_expr) => todo!(),
                 TypedExprKind::UnaryAddressOf(place) => todo!(),

@@ -3,6 +3,7 @@ fn add(a: i64, b: i64) -> i64;
 fn print_num(a: i64, b: i64);
 fn yes();
 fn no();
+fn printf(c: *char);
 
 struct grzybex {
     a: i64,
@@ -14,10 +15,8 @@ fn myfunc() -> i64 {
 }
 
 public fn main() -> i64 {
-    let g: grzybex = grzybex {
-        a: 15,
-        b: add(3, 8)
-    };
-    print_num(g.a, g.b);
-    return add(2, 18);
+    let str: *char = "aboba";
+    let other: *char = "aboba2";
+    printf(str);
+    return 0;
 }

@@ -102,6 +102,10 @@ impl Parser<'_> {
 
     fn parse_type(&mut self) -> Option<DataType> {
         match &self.token.token {
+            Token::MultiplySign => {
+                self.next();
+                Some(DataType::Pointer(Box::new(self.parse_type()?)))
+            }
             Token::DataType(data_type) => {
                 self.next();
                 Some(data_type.clone())

@@ -437,7 +437,10 @@ impl<'a> TypeChecker<'a> {
                 kind: TypedExprKind::FloatLiteral(*f),
             },
             Expression::Identifier(ident) => self.type_identifier(ident, scope, memberof)?,
-            Expression::StringLiteral(_) => todo!(),
+            Expression::StringLiteral(string) => TypedExpr {
+                inferred_type: DataType::Pointer(Box::new(DataType::Char)),
+                kind: TypedExprKind::StringLiteral(string.clone()),
+            },
             Expression::StructLiteral { ident, members } => {
                 self.type_struct_literal(ident, members, scope)?
             }

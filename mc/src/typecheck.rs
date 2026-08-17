@@ -75,8 +75,6 @@ pub enum TypedStmtKind {
 pub struct Variable {
     pub ident: IdentifierSpanned,
     pub data_type: DataType,
-    initialized: bool, //TODO: remove
-    used: bool,
 }
 
 #[derive(Debug)]
@@ -205,8 +203,6 @@ impl<'a> TypeChecker<'a> {
             scope.insert(Variable {
                 ident: ident.clone(),
                 data_type: data_type.clone(),
-                initialized: true,
-                used: false,
             });
         }
 
@@ -376,8 +372,6 @@ impl<'a> TypeChecker<'a> {
                     scope.insert(Variable {
                         ident: ident.clone(),
                         data_type: data_type.clone(),
-                        initialized: expression.is_some(),
-                        used: false,
                     });
 
                     let expr = expression
@@ -448,7 +442,10 @@ impl<'a> TypeChecker<'a> {
                 self.type_struct_literal(ident, members, scope)?
             }
             Expression::FunctionCall(call) => self.type_call(call, scope, memberof)?,
-            Expression::ArraySubscript { ident, element } => todo!(),
+            Expression::ArraySubscript {
+                ident: _,
+                element: _,
+            } => todo!(),
             Expression::Binary { lhs, rhs, operator } => {
                 self.type_binary(lhs, rhs, *operator, scope)?
             }
@@ -652,7 +649,7 @@ impl<'a> TypeChecker<'a> {
             todo!()
         };
 
-        let place = self.expr_to_place(scope, lhs_span, lhs)?;
+        let place = self.expr_to_place(lhs_span, lhs)?;
 
         Some(TypedExpr {
             inferred_type: rhs.inferred_type,
@@ -670,7 +667,7 @@ impl<'a> TypeChecker<'a> {
         let rhs_span = rhs.span;
         let lhs = self.type_expr(scope, lhs, None)?;
         let rhs = self.type_expr(scope, rhs, None)?;
-        let place = self.expr_to_place(scope, lhs_span, lhs)?;
+        let place = self.expr_to_place(lhs_span, lhs)?;
 
         if place.inferred_type != rhs.inferred_type {
             self.errors.push(Error {
@@ -784,9 +781,7 @@ impl<'a> TypeChecker<'a> {
             }
             UnaryOperator::AddressOf => Some(TypedExpr {
                 inferred_type: DataType::Pointer(Box::new(expr.inferred_type.clone())),
-                kind: TypedExprKind::UnaryAddressOf(Box::new(
-                    self.expr_to_place(scope, span, expr)?,
-                )),
+                kind: TypedExprKind::UnaryAddressOf(Box::new(self.expr_to_place(span, expr)?)),
             }),
             UnaryOperator::LogicalNot => {
                 if expr.inferred_type != DataType::Boolean {
@@ -819,7 +814,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn expr_to_place(&mut self, scope: &mut Scope, span: Span, expr: TypedExpr) -> Option<Place> {
+    fn expr_to_place(&mut self, span: Span, expr: TypedExpr) -> Option<Place> {
         Some(match expr.kind {
             TypedExprKind::Dereference(expr) => Place {
                 inferred_type: expr.inferred_type.clone(),

@@ -14,8 +14,10 @@ fn myfunc() -> i64 {
 }
 
 public fn main() -> i64 {
-    let a: i64 = 5;
-    let b: i64 = a - 1;
-    b = b - 1;
-    return b;
+    let g: grzybex = grzybex {
+        a: 15,
+        b: add(3, 8)
+    };
+    print_num(g.a, g.b);
+    return add(2, 18);
 }

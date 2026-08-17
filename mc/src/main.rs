@@ -4,11 +4,8 @@ use std::fs;
 
 mod tokenizer;
 mod typecheck;
-use inkwell::context::Context;
 use inkwell::llvm_sys::core::LLVMContextCreate;
 use inkwell::llvm_sys::core::LLVMDumpModule;
-use inkwell::llvm_sys::prelude::*;
-use ir::IRGen;
 use tokenizer::*;
 
 pub mod parser;
@@ -17,8 +14,7 @@ use parser::*;
 pub mod ast;
 // pub mod compile;
 pub mod ir;
-pub mod lower;
-use lower::*;
+// pub mod lower;
 
 use crate::typecheck::TypeChecker;
 
@@ -71,9 +67,9 @@ fn main() {
     if print_errors(&llvmgen.errors, &lines, &read_file_path) {
         return;
     }
-    // unsafe {
-    //     LLVMDumpModule(llvmgen.module);
-    // }
+    unsafe {
+        LLVMDumpModule(llvmgen.module);
+    }
 
     llvmgen.build(write_file_path);
     // llvmgen.module.print_to_stderr();

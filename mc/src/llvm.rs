@@ -1,5 +1,4 @@
 use std::ffi::CString;
-use std::path::Path;
 use std::ptr;
 
 use inkwell::llvm_sys::analysis::LLVMVerifierFailureAction;
@@ -10,88 +9,14 @@ use inkwell::llvm_sys::target::*;
 use inkwell::llvm_sys::target_machine::LLVMCodeGenFileType::LLVMObjectFile;
 use inkwell::llvm_sys::target_machine::LLVMCodeGenOptLevel::LLVMCodeGenLevelNone;
 use inkwell::llvm_sys::target_machine::*;
-use inkwell::{
-    OptimizationLevel,
-    context::Context,
-    targets::{FileType, InitializationConfig, Target, TargetMachineOptions, TargetTriple},
-};
 
 use crate::typecheck::Place;
 use crate::typecheck::PlaceKind;
 use crate::{
     ast::{ArithmeticOp, IdentifierSpanned},
-    tokenizer::{DataType, Error, Span},
+    tokenizer::{DataType, Error},
     typecheck::{TypeChecker, TypedBlock, TypedExpr, TypedExprKind, TypedStatement, TypedStmtKind},
 };
-
-pub fn run<'a>(out_file: &String) {
-    let context = Context::create();
-    let builder = context.create_builder();
-    let module = context.create_module("tmp");
-
-    let ret_type = context.i64_type();
-    let fn_type = ret_type.fn_type(&[], false);
-    let function = module.add_function("main", fn_type, None);
-    let fn_type2 = context.void_type().fn_type(&[], false);
-    let function2 = module.add_function("mytest", fn_type2, None);
-
-    let entry = context.append_basic_block(function, "entry");
-    builder.position_at_end(entry);
-
-    let str_val = builder
-        .build_global_string_ptr("Hello compiler!\n", "hello_str")
-        .unwrap();
-    // let alloca = builder.build_alloca(context.i64_type(), "var_alloca").unwrap();
-    // builder.build_store(alloca, ).unwrap();
-
-    let mytest = module.get_function("mytest").unwrap();
-    builder.build_direct_call(mytest, &[], "").unwrap();
-    /*
-    let ret_val = builder.build_call(fn_value, &[i32_arg.into(), md_string.into()], "call").unwrap()
-        .try_as_basic_value()
-        .unwrap_basic();
-    */
-    let const_int = context.i64_type().const_int(23, true);
-    let const_intb = context.i64_type().const_int(4, true);
-    let add_result = builder
-        .build_int_add(const_int, const_intb, "tmpadd")
-        .unwrap();
-
-    builder.build_return(Some(&add_result)).unwrap();
-
-    // function.print_to_stderr();
-
-    if !function.verify(true) {
-        unsafe { function.delete() };
-        panic!("function verify");
-    }
-
-    // let triple = TargetMachine::get_default_triple();
-    // let target = Target::create_target_machine_from_options(&self, &triple, options);
-
-    Target::initialize_x86(&InitializationConfig::default());
-
-    let triple = TargetTriple::create("x86_64-pc-linux-gnu");
-    let target = Target::from_triple(&triple).unwrap();
-    let options = TargetMachineOptions::default()
-        .set_cpu("x86-64")
-        // .set_features("+avx2")
-        .set_abi("sysv")
-        .set_level(OptimizationLevel::None);
-
-    let target_machine = target
-        .create_target_machine_from_options(&triple, options)
-        .unwrap();
-
-    module.set_data_layout(&target_machine.get_target_data().get_data_layout());
-    module.set_triple(&triple);
-
-    module.print_to_stderr();
-
-    target_machine
-        .write_to_file(&module, FileType::Object, Path::new(out_file))
-        .unwrap();
-}
 
 #[derive(Debug)]
 pub struct Variable {
@@ -286,7 +211,28 @@ impl<'a> LLVMGen<'a> {
                 DataType::Boolean => LLVMInt8TypeInContext(self.context),
                 DataType::Void => LLVMVoidTypeInContext(self.context),
                 DataType::F32 => LLVMFloatTypeInContext(self.context),
-                DataType::Struct(_identifier) => todo!(), //LLVMStructTypeInContext(self.context, n, 1, 1),
+                DataType::Struct(ident) => {
+                    let s = self
+                        .typechecker
+                        .parser
+                        .struct_declarations
+                        .iter()
+                        .find(|s| s.ident.ident == ident.ident)
+                        .unwrap();
+
+                    let mut members: Vec<LLVMTypeRef> = s
+                        .members
+                        .iter()
+                        .map(|m| self.to_llvm_type(&m.data_type))
+                        .collect();
+
+                    LLVMStructTypeInContext(
+                        self.context,
+                        members.as_mut_ptr(),
+                        members.len() as u32,
+                        0,
+                    )
+                }
             }
         }
     }
@@ -356,7 +302,7 @@ impl<'a> LLVMGen<'a> {
                 TypedStmtKind::Expression(expr) => {
                     self.compile_expression(expr, scope);
                 }
-                TypedStmtKind::While { expr, block } => {
+                TypedStmtKind::While { expr: _, block: _ } => {
                     todo!();
                     // let label_begin = self.alloc_label();
                     // let label_end = self.alloc_label();
@@ -403,7 +349,7 @@ impl<'a> LLVMGen<'a> {
                 TypedStmtKind::VariableDefinition {
                     ident,
                     expr,
-                    data_type,
+                    data_type: _,
                 } => {
                     //TODO: move alloca to the function beginning
                     let ptr = scope
@@ -427,28 +373,11 @@ impl<'a> LLVMGen<'a> {
         &mut self,
         scope: &mut Scope,
         return_type: &DataType,
-        // current_frame_size: &mut i32,
         typed_block: &TypedBlock,
         fn_ref: LLVMValueRef,
     ) {
-        // let outer_scope_frame = *current_frame_size;
-        // let outer_vars_len = scope.vars.len();
         for statement in &typed_block.statements {
             self.compile_statement(statement, scope, return_type, fn_ref);
-        }
-
-        // scope.frame_size = scope.frame_size.max(*current_frame_size);
-        // *current_frame_size = outer_scope_frame;
-        // scope.truncate_reachable_vars(outer_vars_len);
-    }
-
-    fn err_if_mismatched(&mut self, span: &Span, expected: DataType, got: DataType) {
-        //TODO maybe move typechecking into its own pass as this is duplicate code in both backends
-        if got != expected {
-            self.errors.push(Error {
-                span: *span,
-                msg: format!("Mismatched types. Expected `{expected:?}`, got `{got:?}`."),
-            });
         }
     }
 
@@ -524,8 +453,43 @@ impl<'a> LLVMGen<'a> {
                         CString::new(ident.clone()).unwrap().as_ptr(),
                     )
                 }
-                TypedExprKind::StructLiteral(typed_exprs) => todo!(),
-                TypedExprKind::Call(_, typed_exprs) => todo!(),
+                TypedExprKind::StructLiteral(exprs) => {
+                    let mut val = LLVMGetPoison(self.to_llvm_type(&expr.inferred_type));
+
+                    for (i, expr) in exprs.iter().enumerate() {
+                        val = LLVMBuildInsertValue(
+                            self.builder,
+                            val,
+                            self.compile_expression(expr, scope),
+                            i as u32,
+                            c"".as_ptr(),
+                        );
+                    }
+
+                    val
+                    // todo!(
+                    //     "Make struct literals special case as I think they are only valid for assignment, args and ==, or just find a way to get LLVMValueRef for an entire struct"
+                    // );
+                }
+                TypedExprKind::Call(func, args) => {
+                    let func = CString::new(func.clone()).unwrap();
+                    let fn_ref = LLVMGetNamedFunction(self.module, func.as_ptr());
+                    let fn_type = LLVMGlobalGetValueType(fn_ref);
+
+                    let mut args: Vec<LLVMValueRef> = args
+                        .iter()
+                        .map(|expr| self.compile_expression(expr, scope))
+                        .collect();
+
+                    LLVMBuildCall2(
+                        self.builder,
+                        fn_type,
+                        fn_ref,
+                        args.as_mut_ptr(),
+                        args.len() as u32,
+                        c"".as_ptr(),
+                    )
+                }
             }
         }
     }

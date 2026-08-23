@@ -1,14 +1,36 @@
+use std::fmt::Display;
+
 use crate::{
     ast::{
         ArithmeticOp, BinaryOp, ComparisonOp, Expression, ExpressionSpanned, FunctionCall,
         FunctionDefinition, FunctionPrototype, IdentifierSpanned, Statement, StructDeclaration,
         UnaryOperator,
     },
-    ir::List,
     parser::Parser,
-    tokenizer::{DataType, Error, Span},
+    tokenizer::{
+        DataType::{self, UnsizedInt},
+        Error, Span,
+    },
     typecheck::BlockReturnActuality::{AlwaysReturns, NeverReturns, SometimesReturns},
 };
+
+pub struct List<'a, T: Display>(pub &'a [T]);
+
+impl<'a, T: Display> Display for List<'a, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let vec = &self.0;
+
+        write!(f, "[")?;
+
+        for (count, v) in vec.iter().enumerate() {
+            if count != 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", v)?;
+        }
+        write!(f, "]")
+    }
+}
 
 #[derive(Debug)]
 pub struct TypedStatement {
@@ -133,9 +155,31 @@ pub struct TypedExpr {
     pub kind: TypedExprKind,
 }
 
+impl TypedExpr {
+    fn coerce_to(&mut self, target: &DataType) -> bool {
+        use DataType::*;
+        if self.inferred_type == *target {
+            return true;
+        }
+
+        if self.inferred_type == UnsizedInt {
+            match target {
+                UnsizedInt => todo!(),
+                I8 | U8 | I16 | U16 | I32 | U32 | I64 | U64 => {
+                    self.inferred_type = target.clone();
+                    return true;
+                }
+                _ => return false,
+            }
+        }
+
+        false
+    }
+}
+
 #[derive(Debug)]
 pub enum TypedExprKind {
-    NumerLiteral(i64),
+    NumerLiteral(i128),
     CharLiteral(char),
     BoolLiteral(bool),
     FloatLiteral(f32),
@@ -303,8 +347,9 @@ impl<'a> TypeChecker<'a> {
                     });
                 }
                 Statement::Return(expr) => {
+                    always_returns = true;
                     let span = expr.span.clone();
-                    let Some(expr) = self.type_expr(scope, expr, None) else {
+                    let Some(mut expr) = self.type_expr(scope, expr, None) else {
                         continue;
                     };
 
@@ -315,7 +360,7 @@ impl<'a> TypeChecker<'a> {
                         }),
                         BlockReturnAbility::MayReturn(return_ty)
                         | BlockReturnAbility::MustReturn(return_ty) => {
-                            if expr.inferred_type != *return_ty {
+                            if !expr.coerce_to(return_ty) {
                                 self.errors.push(Error {
                                     span,
                                     msg: "Trying to return a wrong type".to_owned(),
@@ -329,7 +374,6 @@ impl<'a> TypeChecker<'a> {
                         kind,
                         return_actuality: BlockReturnActuality::AlwaysReturns,
                     });
-                    always_returns = true;
                 }
                 Statement::Expression(expr) => {
                     let expr = self.type_expr(scope, expr, None);
@@ -389,13 +433,13 @@ impl<'a> TypeChecker<'a> {
                         data_type: data_type.clone(),
                     });
 
-                    let expr = expression
+                    let mut expr = expression
                         .as_ref()
                         .map(|expr| self.type_expr(scope, expr, None))
                         .flatten();
 
-                    if let Some(ref expr) = expr
-                        && expr.inferred_type != *data_type
+                    if let Some(ref mut expr) = expr
+                        && !expr.coerce_to(data_type)
                     {
                         self.errors.push(Error {
                             span: ident.span,
@@ -436,7 +480,7 @@ impl<'a> TypeChecker<'a> {
     ) -> Option<TypedExpr> {
         Some(match &expr.expression {
             Expression::IntLiteral(n) => TypedExpr {
-                inferred_type: DataType::I64,
+                inferred_type: DataType::UnsizedInt,
                 kind: TypedExprKind::NumerLiteral(*n),
             },
             Expression::CharacterLiteral(c) => TypedExpr {
@@ -746,21 +790,32 @@ impl<'a> TypeChecker<'a> {
     ) -> Option<TypedExpr> {
         let lhs_span = lhs.span;
         let rhs_span = rhs.span;
-        let lhs = self.type_expr(scope, lhs, None)?;
-        let rhs = self.type_expr(scope, rhs, None)?;
+        let mut lhs = self.type_expr(scope, lhs, None)?;
+        let mut rhs = self.type_expr(scope, rhs, None)?;
 
-        if !matches!(lhs.inferred_type, DataType::I64 | DataType::F32) {
+        if lhs.inferred_type.is_float() && rhs.inferred_type.is_float() {
+            todo!();
+        } else if lhs.inferred_type.is_int() && rhs.inferred_type.is_int() {
+            if lhs.inferred_type == rhs.inferred_type {
+                if lhs.inferred_type == UnsizedInt {
+                    //TODO some back propagating inference or constant propagation?
+                    //It's probably where I'd do bounds checking as well
+                    lhs.inferred_type = DataType::I32;
+                    rhs.inferred_type = DataType::I32;
+                }
+            } else if lhs.coerce_to(&rhs.inferred_type) {
+            } else if rhs.coerce_to(&lhs.inferred_type) {
+            } else {
+                self.errors.push(Error {
+                    span: Span::between(&lhs_span, &rhs_span),
+                    msg: "Can't operate on different types.".to_owned(),
+                });
+                return None;
+            }
+        } else {
             self.errors.push(Error {
                 span: lhs_span,
                 msg: "Expected numeric types for arithmetic op.".to_owned(),
-            });
-            return None;
-        }
-
-        if lhs.inferred_type != rhs.inferred_type {
-            self.errors.push(Error {
-                span: Span::between(&lhs_span, &rhs_span),
-                msg: "Can't operate on different types.".to_owned(),
             });
             return None;
         }

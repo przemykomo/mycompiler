@@ -12,7 +12,7 @@ pub struct ExpressionSpanned {
 
 #[derive(Debug)]
 pub enum Expression {
-    IntLiteral(i64),
+    IntLiteral(i128),
     CharacterLiteral(char),
     BoolLiteral(bool),
     FloatLiteral(f32),

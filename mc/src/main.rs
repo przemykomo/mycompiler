@@ -13,7 +13,7 @@ use parser::*;
 
 pub mod ast;
 // pub mod compile;
-pub mod ir;
+// pub mod ir;
 // pub mod lower;
 
 use crate::typecheck::TypeChecker;

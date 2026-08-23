@@ -4,7 +4,7 @@ use crate::ast::IdentifierSpanned;
 
 #[derive(Debug, PartialEq)]
 pub enum Token {
-    IntLiteral(i64),
+    IntLiteral(i128),
     CharacterLiteral(char),
     BoolLiteral(bool),
     FloatLiteral(f32),
@@ -48,14 +48,41 @@ pub enum Token {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DataType {
+    UnsizedInt,
+    I8,
+    U8,
+    I16,
+    U16,
+    I32,
+    U32,
     I64,
+    U64,
+
+    UnsizedFloat,
+    F32,
+    F64,
+
     Char,
     Array { data_type: Box<DataType>, size: i32 },
     Pointer(Box<DataType>),
     Boolean,
     Void,
-    F32,
     Struct(IdentifierSpanned), //TODO: Possibly change it to a Path/Vec<Identifier>
+}
+
+impl DataType {
+    pub fn is_float(&self) -> bool {
+        use DataType::*;
+        matches!(self, UnsizedFloat | F32 | F64)
+    }
+
+    pub fn is_int(&self) -> bool {
+        use DataType::*;
+        matches!(
+            self,
+            UnsizedInt | I8 | U8 | I16 | U16 | I32 | U32 | I64 | U64
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -182,11 +209,21 @@ pub fn tokenize(contents: &str) -> TokenizedFile {
                 endcolumn: last_pos - state.line_begin_pos,
             };
             let token = match buffer.as_str() {
+                "i8" => Token::DataType(DataType::I8),
+                "u8" => Token::DataType(DataType::U8),
+                "i16" => Token::DataType(DataType::I16),
+                "u16" => Token::DataType(DataType::U16),
+                "i32" => Token::DataType(DataType::I32),
+                "u32" => Token::DataType(DataType::U32),
                 "i64" => Token::DataType(DataType::I64),
+                "u64" => Token::DataType(DataType::U64),
+
+                "f32" => Token::DataType(DataType::F32),
+                "f64" => Token::DataType(DataType::F64),
+
                 "char" => Token::DataType(DataType::Char),
                 "void" => Token::DataType(DataType::Void),
                 "bool" => Token::DataType(DataType::Boolean),
-                "f32" => Token::DataType(DataType::F32),
                 "public" => Token::Public,
                 "string" => Token::String,
                 "extern" => Token::Extern,
@@ -248,7 +285,7 @@ pub fn tokenize(contents: &str) -> TokenizedFile {
                     );
                 }
             } else {
-                if let Ok(num) = buffer.parse::<i64>() {
+                if let Ok(num) = buffer.parse::<i128>() {
                     let span = Span {
                         line: state.line,
                         column: pos - state.line_begin_pos,

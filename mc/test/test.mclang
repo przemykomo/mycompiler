@@ -14,10 +14,7 @@ fn myfunc() {
     printf("myfunc");
 }
 
-public fn main() -> i64 {
-    let str: *char = "aboba";
-    let other: *char = "aboba2";
-    printf(str);
-    myfunc();
-    return 0;
+public fn main() -> i32 {
+    let b: u32 = -2;
+    return 8;
 }

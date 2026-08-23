@@ -202,7 +202,16 @@ impl<'a> LLVMGen<'a> {
     fn to_llvm_type(&self, data_type: &DataType) -> LLVMTypeRef {
         unsafe {
             match data_type {
-                DataType::I64 => LLVMInt64TypeInContext(self.context),
+                DataType::UnsizedInt => unreachable!(),
+                DataType::I8 | DataType::U8 => LLVMInt8TypeInContext(self.context),
+                DataType::I16 | DataType::U16 => LLVMInt16TypeInContext(self.context),
+                DataType::I32 | DataType::U32 => LLVMInt32TypeInContext(self.context),
+                DataType::U64 | DataType::I64 => LLVMInt64TypeInContext(self.context),
+
+                DataType::UnsizedFloat => unreachable!(),
+                DataType::F32 => LLVMFloatTypeInContext(self.context),
+                DataType::F64 => LLVMDoubleTypeInContext(self.context),
+
                 DataType::Char => LLVMInt8TypeInContext(self.context),
                 DataType::Array { data_type, size } => {
                     LLVMArrayType2(self.to_llvm_type(data_type), *size as u64)
@@ -210,7 +219,6 @@ impl<'a> LLVMGen<'a> {
                 DataType::Pointer(_) => LLVMPointerTypeInContext(self.context, 0),
                 DataType::Boolean => LLVMInt8TypeInContext(self.context),
                 DataType::Void => LLVMVoidTypeInContext(self.context),
-                DataType::F32 => LLVMFloatTypeInContext(self.context),
                 DataType::Struct(ident) => {
                     let s = self
                         .typechecker
@@ -389,7 +397,7 @@ impl<'a> LLVMGen<'a> {
         unsafe {
             match &expr.kind {
                 TypedExprKind::NumerLiteral(val) => {
-                    LLVMConstInt(LLVMInt64TypeInContext(self.context), *val as u64, 1)
+                    LLVMConstInt(self.to_llvm_type(&expr.inferred_type), *val as u64, 1)
                 }
                 TypedExprKind::CharLiteral(_) => todo!(),
                 TypedExprKind::BoolLiteral(_) => todo!(),
@@ -399,17 +407,18 @@ impl<'a> LLVMGen<'a> {
                     CString::new(string.clone()).unwrap().as_ptr(),
                     c"str".as_ptr(),
                 ),
-                TypedExprKind::Negation(typed_expr) => todo!(),
-                TypedExprKind::Not(typed_expr) => todo!(),
-                TypedExprKind::UnaryAddressOf(place) => todo!(),
-                TypedExprKind::Dereference(typed_expr) => todo!(),
+                TypedExprKind::Negation(_typed_expr) => todo!(),
+                TypedExprKind::Not(_typed_expr) => todo!(),
+                TypedExprKind::UnaryAddressOf(_place) => todo!(),
+                TypedExprKind::Dereference(_typed_expr) => todo!(),
                 TypedExprKind::Arithmetic(op, lhs, rhs) => {
                     let ty = &lhs.inferred_type;
                     let lhs = self.compile_expression(lhs, scope);
                     let rhs = self.compile_expression(rhs, scope);
 
+                    use DataType::*;
                     match ty {
-                        DataType::I64 => match op {
+                        I8 | U8 | I16 | U16 | I32 | U32 | I64 | U64 => match op {
                             ArithmeticOp::Add => {
                                 LLVMBuildAdd(self.builder, lhs, rhs, c"add".as_ptr())
                             }
@@ -423,8 +432,8 @@ impl<'a> LLVMGen<'a> {
                                 LLVMBuildSDiv(self.builder, lhs, rhs, c"div".as_ptr())
                             }
                         },
-                        DataType::F32 => todo!(),
-                        DataType::Struct(ident) => todo!(),
+                        F32 | F64 => todo!(),
+                        Struct(_ident) => todo!(),
                         _ => unreachable!(),
                     }
                 }
@@ -537,7 +546,7 @@ impl<'a> LLVMGen<'a> {
         match &place.kind {
             PlaceKind::Deref(expr) => self.compile_expression(expr, scope),
             PlaceKind::Variable(ident) => scope.find(ident).ptr,
-            PlaceKind::Index(ptr, idx) => todo!(),
+            PlaceKind::Index(_ptr, _idx) => todo!(),
             PlaceKind::Member(place, member) => self.compile_member_access(place, scope, member),
         }
     }

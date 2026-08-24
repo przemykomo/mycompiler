@@ -7,7 +7,7 @@ pub enum Token {
     IntLiteral(i128),
     CharacterLiteral(char),
     BoolLiteral(bool),
-    FloatLiteral(f32),
+    FloatLiteral(f64),
     Semicolon,
     DataType(DataType),
     Identifier(String),
@@ -73,7 +73,8 @@ pub enum DataType {
 impl DataType {
     pub fn is_float(&self) -> bool {
         use DataType::*;
-        matches!(self, UnsizedFloat | F32 | F64)
+        // UnsizedInt can be promoted to a float
+        matches!(self, UnsizedInt | UnsizedFloat | F32 | F64)
     }
 
     pub fn is_int(&self) -> bool {
@@ -265,7 +266,7 @@ pub fn tokenize(contents: &str) -> TokenizedFile {
             }
 
             if is_float {
-                if let Ok(val) = buffer.parse::<f32>() {
+                if let Ok(val) = buffer.parse::<f64>() {
                     let span = Span {
                         line: state.line,
                         column: pos - state.line_begin_pos,

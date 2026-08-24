@@ -10,6 +10,7 @@ use inkwell::llvm_sys::target_machine::LLVMCodeGenFileType::LLVMObjectFile;
 use inkwell::llvm_sys::target_machine::LLVMCodeGenOptLevel::LLVMCodeGenLevelNone;
 use inkwell::llvm_sys::target_machine::*;
 
+use crate::typecheck::BlockReturnActuality::AlwaysReturns;
 use crate::typecheck::Place;
 use crate::typecheck::PlaceKind;
 use crate::{
@@ -122,6 +123,8 @@ impl<'a> LLVMGen<'a> {
                         fn_ref,
                     );
                 }
+
+                LLVMDumpModule(self.module);
 
                 if LLVMVerifyFunction(fn_ref, LLVMVerifierFailureAction::LLVMPrintMessageAction)
                     == 1
@@ -293,15 +296,23 @@ impl<'a> LLVMGen<'a> {
                     LLVMPositionBuilderAtEnd(self.builder, then_block);
                     self.subscope(scope, return_type, then_scope, fn_ref);
 
-                    LLVMBuildBr(self.builder, end_block);
-
-                    if let Some(else_scope) = else_scope {
-                        self.subscope(scope, return_type, else_scope, fn_ref);
+                    if then_scope.return_actuality != AlwaysReturns {
                         LLVMBuildBr(self.builder, end_block);
                     }
 
-                    LLVMAppendExistingBasicBlock(fn_ref, end_block);
-                    LLVMPositionBuilderAtEnd(self.builder, end_block);
+                    if let Some(else_scope) = else_scope {
+                        LLVMAppendExistingBasicBlock(fn_ref, else_block);
+                        LLVMPositionBuilderAtEnd(self.builder, else_block);
+                        self.subscope(scope, return_type, else_scope, fn_ref);
+                        if else_scope.return_actuality != AlwaysReturns {
+                            LLVMBuildBr(self.builder, end_block);
+                        }
+                    }
+
+                    if statement.return_actuality != AlwaysReturns {
+                        LLVMAppendExistingBasicBlock(fn_ref, end_block);
+                        LLVMPositionBuilderAtEnd(self.builder, end_block);
+                    }
                 }
                 TypedStmtKind::Return(expr) => {
                     if let Some(expr) = expr {
@@ -397,11 +408,20 @@ impl<'a> LLVMGen<'a> {
         unsafe {
             match &expr.kind {
                 TypedExprKind::NumerLiteral(val) => {
-                    LLVMConstInt(self.to_llvm_type(&expr.inferred_type), *val as u64, 1)
+                    //TODO: maybe move it to typechecker?
+                    if expr.inferred_type.is_int() {
+                        LLVMConstInt(self.to_llvm_type(&expr.inferred_type), *val as u64, 1)
+                    } else if expr.inferred_type.is_float() {
+                        LLVMConstReal(self.to_llvm_type(&expr.inferred_type), *val as f64)
+                    } else {
+                        unreachable!();
+                    }
                 }
                 TypedExprKind::CharLiteral(_) => todo!(),
                 TypedExprKind::BoolLiteral(_) => todo!(),
-                TypedExprKind::FloatLiteral(_) => todo!(),
+                TypedExprKind::FloatLiteral(val) => {
+                    LLVMConstReal(self.to_llvm_type(&expr.inferred_type), *val)
+                }
                 TypedExprKind::StringLiteral(string) => LLVMBuildGlobalString(
                     self.builder,
                     CString::new(string.clone()).unwrap().as_ptr(),
@@ -429,18 +449,41 @@ impl<'a> LLVMGen<'a> {
                                 LLVMBuildMul(self.builder, lhs, rhs, c"mul".as_ptr())
                             }
                             ArithmeticOp::Div => {
-                                LLVMBuildSDiv(self.builder, lhs, rhs, c"div".as_ptr())
+                                if matches!(ty, U8 | U16 | U32 | U64) {
+                                    LLVMBuildUDiv(self.builder, lhs, rhs, c"div".as_ptr())
+                                } else {
+                                    LLVMBuildSDiv(self.builder, lhs, rhs, c"div".as_ptr())
+                                }
                             }
                         },
-                        F32 | F64 => todo!(),
+                        F32 | F64 => match op {
+                            ArithmeticOp::Add => {
+                                LLVMBuildFAdd(self.builder, lhs, rhs, c"add".as_ptr())
+                            }
+                            ArithmeticOp::Sub => {
+                                LLVMBuildFSub(self.builder, lhs, rhs, c"sub".as_ptr())
+                            }
+                            ArithmeticOp::Mul => {
+                                LLVMBuildFMul(self.builder, lhs, rhs, c"mul".as_ptr())
+                            }
+                            ArithmeticOp::Div => {
+                                LLVMBuildFDiv(self.builder, lhs, rhs, c"div".as_ptr())
+                            }
+                        },
                         Struct(_ident) => todo!(),
                         _ => unreachable!(),
                     }
                 }
                 TypedExprKind::Comparison(op, lhs, rhs) => {
-                    let lhs = self.compile_expression(lhs, scope);
-                    let rhs = self.compile_expression(rhs, scope);
-                    LLVMBuildICmp(self.builder, (*op).into(), lhs, rhs, c"cmp".as_ptr())
+                    let lhs_v = self.compile_expression(lhs, scope);
+                    let rhs_v = self.compile_expression(rhs, scope);
+                    if lhs.inferred_type.is_int() {
+                        LLVMBuildICmp(self.builder, (*op).into(), lhs_v, rhs_v, c"cmp".as_ptr())
+                    } else if lhs.inferred_type.is_float() {
+                        LLVMBuildFCmp(self.builder, (*op).into(), lhs_v, rhs_v, c"cmp".as_ptr())
+                    } else {
+                        todo!();
+                    }
                 }
                 TypedExprKind::Assignment(place, expr) => {
                     //TODO: move alloca to the function beginning

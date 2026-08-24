@@ -1,6 +1,9 @@
 use std::fmt::Display;
 
-use inkwell::llvm_sys::LLVMIntPredicate::{self, *};
+use inkwell::llvm_sys::{
+    LLVMIntPredicate::{self, *},
+    LLVMRealPredicate,
+};
 
 use crate::tokenizer::*;
 
@@ -15,7 +18,7 @@ pub enum Expression {
     IntLiteral(i128),
     CharacterLiteral(char),
     BoolLiteral(bool),
-    FloatLiteral(f32),
+    FloatLiteral(f64),
     StringLiteral(String),
     StructLiteral {
         ident: IdentifierSpanned,
@@ -117,6 +120,16 @@ impl Into<LLVMIntPredicate> for ComparisonOp {
             ComparisonOp::Equal => LLVMIntEQ,
             ComparisonOp::Larger => LLVMIntSGT,
             ComparisonOp::Smaller => LLVMIntSLT,
+        }
+    }
+}
+
+impl Into<LLVMRealPredicate> for ComparisonOp {
+    fn into(self) -> LLVMRealPredicate {
+        match self {
+            ComparisonOp::Equal => LLVMRealPredicate::LLVMRealOEQ,
+            ComparisonOp::Larger => LLVMRealPredicate::LLVMRealOGT,
+            ComparisonOp::Smaller => LLVMRealPredicate::LLVMRealOLT,
         }
     }
 }

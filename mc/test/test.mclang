@@ -15,6 +15,10 @@ fn myfunc() {
 }
 
 public fn main() -> i32 {
-    let b: u32 = -2;
-    return 8;
+    let b: f32 = 13 + 2.3;
+    if b > 12 {
+        return 12;
+    } else {
+        return 3;
+    }
 }

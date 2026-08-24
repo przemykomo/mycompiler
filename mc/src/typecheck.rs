@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::{default, fmt::Display};
 
 use crate::{
     ast::{
@@ -8,7 +8,7 @@ use crate::{
     },
     parser::Parser,
     tokenizer::{
-        DataType::{self, UnsizedInt},
+        DataType::{self, *},
         Error, Span,
     },
     typecheck::BlockReturnActuality::{AlwaysReturns, NeverReturns, SometimesReturns},
@@ -165,7 +165,18 @@ impl TypedExpr {
         if self.inferred_type == UnsizedInt {
             match target {
                 UnsizedInt => todo!(),
-                I8 | U8 | I16 | U16 | I32 | U32 | I64 | U64 => {
+                I8 | U8 | I16 | U16 | I32 | U32 | I64 | U64 | F32 | F64 => {
+                    self.inferred_type = target.clone();
+                    return true;
+                }
+                _ => return false,
+            }
+        }
+
+        if self.inferred_type == UnsizedFloat {
+            match target {
+                UnsizedFloat => todo!(),
+                F32 | F64 => {
                     self.inferred_type = target.clone();
                     return true;
                 }
@@ -182,7 +193,7 @@ pub enum TypedExprKind {
     NumerLiteral(i128),
     CharLiteral(char),
     BoolLiteral(bool),
-    FloatLiteral(f32),
+    FloatLiteral(f64),
     StringLiteral(String),
     Negation(Box<TypedExpr>),
     Not(Box<TypedExpr>),
@@ -492,7 +503,7 @@ impl<'a> TypeChecker<'a> {
                 kind: TypedExprKind::BoolLiteral(*b),
             },
             Expression::FloatLiteral(f) => TypedExpr {
-                inferred_type: DataType::F32,
+                inferred_type: DataType::UnsizedFloat,
                 kind: TypedExprKind::FloatLiteral(*f),
             },
             Expression::Identifier(ident) => self.type_identifier(ident, scope, memberof)?,
@@ -754,23 +765,17 @@ impl<'a> TypeChecker<'a> {
     ) -> Option<TypedExpr> {
         let lhs_span = lhs.span;
         let rhs_span = rhs.span;
-        let lhs = self.type_expr(scope, lhs, None)?;
-        let rhs = self.type_expr(scope, rhs, None)?;
+        let mut lhs = self.type_expr(scope, lhs, None)?;
+        let mut rhs = self.type_expr(scope, rhs, None)?;
 
-        if !(matches!(lhs.inferred_type, DataType::I64 | DataType::F32)
-            && op != ComparisonOp::Equal)
-        {
+        if lhs.inferred_type.is_int() && rhs.inferred_type.is_int() {
+            self.coerce_binary(lhs_span, rhs_span, &mut lhs, &mut rhs, UnsizedInt, I32)?;
+        } else if lhs.inferred_type.is_float() && rhs.inferred_type.is_float() {
+            self.coerce_binary(lhs_span, rhs_span, &mut lhs, &mut rhs, UnsizedFloat, F32)?;
+        } else {
             self.errors.push(Error {
                 span: lhs_span,
                 msg: "Expected numeric types for comparison op.".to_owned(),
-            });
-            return None;
-        }
-
-        if lhs.inferred_type != rhs.inferred_type {
-            self.errors.push(Error {
-                span: Span::between(&lhs_span, &rhs_span),
-                msg: "Can't operate on different types.".to_owned(),
             });
             return None;
         }
@@ -793,25 +798,10 @@ impl<'a> TypeChecker<'a> {
         let mut lhs = self.type_expr(scope, lhs, None)?;
         let mut rhs = self.type_expr(scope, rhs, None)?;
 
-        if lhs.inferred_type.is_float() && rhs.inferred_type.is_float() {
-            todo!();
-        } else if lhs.inferred_type.is_int() && rhs.inferred_type.is_int() {
-            if lhs.inferred_type == rhs.inferred_type {
-                if lhs.inferred_type == UnsizedInt {
-                    //TODO some back propagating inference or constant propagation?
-                    //It's probably where I'd do bounds checking as well
-                    lhs.inferred_type = DataType::I32;
-                    rhs.inferred_type = DataType::I32;
-                }
-            } else if lhs.coerce_to(&rhs.inferred_type) {
-            } else if rhs.coerce_to(&lhs.inferred_type) {
-            } else {
-                self.errors.push(Error {
-                    span: Span::between(&lhs_span, &rhs_span),
-                    msg: "Can't operate on different types.".to_owned(),
-                });
-                return None;
-            }
+        if lhs.inferred_type.is_int() && rhs.inferred_type.is_int() {
+            self.coerce_binary(lhs_span, rhs_span, &mut lhs, &mut rhs, UnsizedInt, I32)?;
+        } else if lhs.inferred_type.is_float() && rhs.inferred_type.is_float() {
+            self.coerce_binary(lhs_span, rhs_span, &mut lhs, &mut rhs, UnsizedFloat, F32)?;
         } else {
             self.errors.push(Error {
                 span: lhs_span,
@@ -824,6 +814,40 @@ impl<'a> TypeChecker<'a> {
             inferred_type: lhs.inferred_type.clone(),
             kind: TypedExprKind::Arithmetic(op, Box::new(lhs), Box::new(rhs)),
         })
+    }
+
+    fn coerce_binary(
+        &mut self,
+        lhs_span: Span,
+        rhs_span: Span,
+        lhs: &mut TypedExpr,
+        rhs: &mut TypedExpr,
+        unsized_ty: DataType,
+        default_ty: DataType,
+    ) -> Option<()> {
+        if lhs.inferred_type == rhs.inferred_type {
+            if lhs.inferred_type == unsized_ty {
+                //TODO some back propagating inference or constant propagation?
+                //It's probably where I'd do bounds checking as well
+                lhs.inferred_type = default_ty.clone();
+                rhs.inferred_type = default_ty;
+            }
+        } else if lhs.coerce_to(&rhs.inferred_type) {
+        } else if rhs.coerce_to(&lhs.inferred_type) {
+        } else if (lhs.inferred_type == UnsizedFloat && rhs.inferred_type == UnsizedInt)
+            || (rhs.inferred_type == UnsizedFloat && lhs.inferred_type == UnsizedInt)
+        {
+            //TODO: I'm not too sure if this check should be here
+            lhs.inferred_type = F32;
+            rhs.inferred_type = F32;
+        } else {
+            self.errors.push(Error {
+                span: Span::between(&lhs_span, &rhs_span),
+                msg: "Can't operate on different types.".to_owned(),
+            });
+            return None;
+        }
+        Some(())
     }
 
     fn type_unary(
@@ -871,7 +895,7 @@ impl<'a> TypeChecker<'a> {
                 })
             }
             UnaryOperator::Negation => {
-                if expr.inferred_type != DataType::I64 && expr.inferred_type != DataType::F32 {
+                if !expr.inferred_type.is_float() && !expr.inferred_type.is_int() {
                     self.errors.push(Error {
                         span,
                         msg: "Expected a numeric type".to_owned(),

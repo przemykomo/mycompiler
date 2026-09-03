@@ -1,4 +1,4 @@
-use std::{default, fmt::Display};
+use std::fmt::Display;
 
 use crate::{
     ast::{
@@ -11,7 +11,10 @@ use crate::{
         DataType::{self, *},
         Error, Span,
     },
-    typecheck::BlockReturnActuality::{AlwaysReturns, NeverReturns, SometimesReturns},
+    typecheck::{
+        self,
+        BlockReturnActuality::{AlwaysReturns, NeverReturns, SometimesReturns},
+    },
 };
 
 pub struct List<'a, T: Display>(pub &'a [T]);
@@ -243,8 +246,43 @@ pub struct TypedBlock {
 
 impl<'a> TypeChecker<'a> {
     pub fn typecheck(&mut self) {
+
+        // for dec in &self.parser.struct_declarations {
+        //     self.err_on_recursive_structs(dec, &mut Vec::new());
+        // }
+
         for def in &self.parser.functions {
             self.type_func(def);
+        }
+    }
+
+    fn err_on_recursive_structs<'s>(
+        &mut self,
+        dec: &'s StructDeclaration,
+        stack: &mut Vec<&'s StructDeclaration>,
+    ) where
+        'a: 's,
+    {
+        stack.push(dec);
+        for member in &dec.members {
+            let member_dec = self
+                .parser
+                .struct_declarations
+                .iter()
+                .find(|s| s.ident.ident == member.ident.ident)
+                .unwrap();
+            if stack
+                .iter()
+                .find(|s| **s as *const StructDeclaration == member_dec as *const _)
+                .is_some()
+            {
+                self.errors.push(Error {
+                    span: member.ident.span,
+                    msg: "Recursive struct definition.".to_owned(),
+                });
+            } else {
+                self.err_on_recursive_structs(member_dec, stack);
+            }
         }
     }
 
@@ -580,10 +618,11 @@ impl<'a> TypeChecker<'a> {
         let mut typed_args = Vec::new();
         for (i, expr) in call.arguments.iter().enumerate() {
             let arg = func.arguments.get(i)?;
-            let expr = self.type_expr(scope, expr, None)?;
-            if arg.1 != expr.inferred_type {
+            let span = expr.span;
+            let mut expr = self.type_expr(scope, expr, None)?;
+            if !expr.coerce_to(&arg.1) {
                 self.errors.push(Error {
-                    span: arg.0.span,
+                    span,
                     msg: "Mismatched types.".to_owned(),
                 });
                 return None;

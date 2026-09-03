@@ -10,6 +10,7 @@ use inkwell::llvm_sys::target_machine::LLVMCodeGenFileType::LLVMObjectFile;
 use inkwell::llvm_sys::target_machine::LLVMCodeGenOptLevel::LLVMCodeGenLevelNone;
 use inkwell::llvm_sys::target_machine::*;
 
+use crate::abi_sysv::create_abi_info;
 use crate::typecheck::BlockReturnActuality::AlwaysReturns;
 use crate::typecheck::Place;
 use crate::typecheck::PlaceKind;
@@ -44,6 +45,8 @@ pub struct LLVMGen<'a> {
     builder: LLVMBuilderRef,
     pub module: LLVMModuleRef,
     id_count: usize,
+    pub data_layout: LLVMTargetDataRef,
+    machine: LLVMTargetMachineRef,
 }
 
 impl<'a> LLVMGen<'a> {
@@ -52,6 +55,34 @@ impl<'a> LLVMGen<'a> {
             let builder = LLVMCreateBuilderInContext(context);
             let module = LLVMModuleCreateWithNameInContext(c"tmp".as_ptr(), context);
 
+            LLVMInitializeX86Target();
+            LLVMInitializeX86TargetInfo();
+            LLVMInitializeX86AsmPrinter();
+            LLVMInitializeX86AsmParser();
+            LLVMInitializeX86Disassembler();
+            LLVMInitializeX86TargetMC();
+
+            let mut target = ptr::null_mut();
+            let mut err_string = ::core::ptr::null_mut();
+
+            let triple = c"x86_64-pc-linux-gnu".as_ptr();
+            let ret = LLVMGetTargetFromTriple(triple, &mut target, &mut err_string);
+            if ret == 1 {
+                panic!("get target");
+            }
+
+            let opt = LLVMCreateTargetMachineOptions();
+            LLVMTargetMachineOptionsSetCPU(opt, c"x86-64".as_ptr());
+            LLVMTargetMachineOptionsSetABI(opt, c"sysv".as_ptr());
+            LLVMTargetMachineOptionsSetCodeGenOptLevel(opt, LLVMCodeGenLevelNone);
+
+            let machine = LLVMCreateTargetMachineWithOptions(target, triple, opt);
+
+            let data_layout = LLVMCreateTargetDataLayout(machine);
+            LLVMSetDataLayout(module, LLVMCopyStringRepOfTargetData(data_layout));
+
+            LLVMSetTarget(module, triple);
+
             Self {
                 typechecker,
                 errors: Vec::new(),
@@ -59,6 +90,8 @@ impl<'a> LLVMGen<'a> {
                 builder,
                 module,
                 id_count: 0,
+                data_layout,
+                machine,
             }
         }
     }
@@ -138,38 +171,9 @@ impl<'a> LLVMGen<'a> {
 
     pub fn build(&self, out_file: String) {
         unsafe {
-            LLVMInitializeX86Target();
-            LLVMInitializeX86TargetInfo();
-            LLVMInitializeX86AsmPrinter();
-            LLVMInitializeX86AsmParser();
-            LLVMInitializeX86Disassembler();
-            LLVMInitializeX86TargetMC();
-
-            let mut target = ptr::null_mut();
             let mut err_string = ::core::ptr::null_mut();
-
-            let triple = c"x86_64-pc-linux-gnu".as_ptr();
-            let ret = LLVMGetTargetFromTriple(triple, &mut target, &mut err_string);
-            if ret == 1 {
-                panic!("get target");
-            }
-
-            let opt = LLVMCreateTargetMachineOptions();
-            LLVMTargetMachineOptionsSetCPU(opt, c"x86-64".as_ptr());
-            LLVMTargetMachineOptionsSetABI(opt, c"sysv".as_ptr());
-            LLVMTargetMachineOptionsSetCodeGenOptLevel(opt, LLVMCodeGenLevelNone);
-
-            let machine = LLVMCreateTargetMachineWithOptions(target, triple, opt);
-
-            LLVMSetDataLayout(
-                self.module,
-                LLVMCopyStringRepOfTargetData(LLVMCreateTargetDataLayout(machine)),
-            );
-
-            LLVMSetTarget(self.module, triple);
-
             let ret = LLVMTargetMachineEmitToFile(
-                machine,
+                self.machine,
                 self.module,
                 CString::new(out_file).unwrap().as_ptr(),
                 LLVMObjectFile,
@@ -184,6 +188,9 @@ impl<'a> LLVMGen<'a> {
     }
 
     fn add_fn_decl(&mut self, decl: &crate::ast::FunctionPrototype) -> LLVMValueRef {
+        println!("{}", decl.ident.ident);
+        dbg!(create_abi_info(self, decl));
+
         let ret_type = self.to_llvm_type(&decl.return_type);
         let mut param_types: Vec<LLVMTypeRef> = decl
             .arguments
@@ -202,7 +209,7 @@ impl<'a> LLVMGen<'a> {
         }
     }
 
-    fn to_llvm_type(&self, data_type: &DataType) -> LLVMTypeRef {
+    pub fn to_llvm_type(&self, data_type: &DataType) -> LLVMTypeRef {
         unsafe {
             match data_type {
                 DataType::UnsizedInt => unreachable!(),

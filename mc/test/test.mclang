@@ -1,8 +1,7 @@
 struct grzybex {
     a: i64,
-    b: i32,
-    f: f32,
-    c: i64
+    c: f32,
+    d: f32
 }
 
 struct s {

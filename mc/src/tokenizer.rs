@@ -84,6 +84,11 @@ impl DataType {
             UnsizedInt | I8 | U8 | I16 | U16 | I32 | U32 | I64 | U64
         )
     }
+
+    pub fn is_scalar(&self) -> bool {
+        use DataType::*;
+        !matches!(self, Array { .. } | Struct { .. })
+    }
 }
 
 #[derive(Debug)]

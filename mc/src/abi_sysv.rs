@@ -15,7 +15,11 @@ pub fn create_abi_info(llvmgen: &LLVMGen, fun: &FunctionPrototype) -> FuncABIInf
         ssa_registers: 8,
     };
     let ret_abi_info = classify_return(llvmgen, &fun.return_type);
-    if let ABIArgInfo::Single(X64Class::CLASS_MEMORY) = ret_abi_info {
+    if let ABIArgInfo::Single(Piece {
+        class: X64Class::CLASS_MEMORY,
+        ..
+    }) = ret_abi_info
+    {
         // If the type has class MEMORY, then the caller provides space for the return value
         // and passes the address of this storage in %rdi as if it were the first argument to the
         // function.
@@ -39,15 +43,15 @@ fn classify_parameter(
     data_type: &DataType,
     available_registers: &mut Registers,
 ) -> ABIArgInfo {
-    let mut classes = [X64Class::CLASS_NO_CLASS; 8];
+    let mut pieces = [Piece::new(X64Class::CLASS_NO_CLASS); 8];
 
-    let (ret, classes_to_assign) = match classify(llvmgen, data_type, &mut classes, 0) {
+    let (ret, classes_to_assign) = match classify(llvmgen, data_type, &mut pieces, 0) {
         0 => (
-            ABIArgInfo::Single(X64Class::CLASS_MEMORY),
-            &[] as &[X64Class],
+            ABIArgInfo::Single(Piece::new(X64Class::CLASS_MEMORY)),
+            &[] as &[Piece],
         ),
-        1 => (ABIArgInfo::Single(classes[0]), &classes[0..0]),
-        words => (ABIArgInfo::Aggregate(classes, words), &classes[0..words]),
+        1 => (ABIArgInfo::Single(pieces[0]), &pieces[0..0]),
+        words => (ABIArgInfo::Aggregate(pieces, words), &pieces[0..words]),
     };
 
     let mut needed_regs = Registers {
@@ -55,8 +59,8 @@ fn classify_parameter(
         ssa_registers: 0,
     };
 
-    for class in classes_to_assign {
-        match *class {
+    for piece in classes_to_assign {
+        match piece.class {
             X64Class::CLASS_INTEGER => {
                 needed_regs.int_registers += 1;
             }
@@ -71,7 +75,7 @@ fn classify_parameter(
     if available_registers.int_registers < needed_regs.int_registers
         || available_registers.ssa_registers < needed_regs.ssa_registers
     {
-        return ABIArgInfo::Single(X64Class::CLASS_MEMORY);
+        return ABIArgInfo::Single(Piece::new(X64Class::CLASS_MEMORY));
     }
 
     available_registers.int_registers -= needed_regs.int_registers;
@@ -81,12 +85,12 @@ fn classify_parameter(
 }
 
 fn classify_return(llvmgen: &LLVMGen, data_type: &DataType) -> ABIArgInfo {
-    let mut classes = [X64Class::CLASS_NO_CLASS; 8];
+    let mut pieces = [Piece::new(X64Class::CLASS_NO_CLASS); 8];
 
-    match classify(llvmgen, data_type, &mut classes, 0) {
-        0 => ABIArgInfo::Single(X64Class::CLASS_MEMORY),
-        1 => ABIArgInfo::Single(classes[0]),
-        words => ABIArgInfo::Aggregate(classes, words),
+    match classify(llvmgen, data_type, &mut pieces, 0) {
+        0 => ABIArgInfo::Single(Piece::new(X64Class::CLASS_MEMORY)),
+        1 => ABIArgInfo::Single(pieces[0]),
+        words => ABIArgInfo::Aggregate(pieces, words),
     }
 }
 
@@ -95,18 +99,43 @@ fn classify_return(llvmgen: &LLVMGen, data_type: &DataType) -> ABIArgInfo {
 fn classify(
     llvmgen: &LLVMGen,
     data_type: &DataType,
-    classes: &mut [X64Class; 8],
+    pieces: &mut [Piece; 8],
     byte_offset: usize,
 ) -> usize {
     match data_type {
         UnsizedInt | UnsizedFloat => unreachable!(),
         Void => 1,
         I8 | U8 | I16 | U16 | I32 | U32 | I64 | U64 | Pointer(_) | Char | Boolean => {
-            classes[0] = X64Class::CLASS_INTEGER;
+            let bits_size = match data_type {
+                Boolean | Char | I8 | U8 => 8,
+                I16 | U16 => 16,
+                I32 | U32 => 32,
+                I64 | U64 | Pointer(_) => 64,
+                _ => unreachable!(),
+            };
+            pieces[0] = Piece {
+                class: X64Class::CLASS_INTEGER,
+                meaningful_bits: byte_offset as u8 * 8 + bits_size,
+                vec: false,
+            };
             1
         }
-        F32 | F64 => {
-            classes[0] = X64Class::CLASS_SSE;
+        F32 => {
+            pieces[0] = Piece {
+                class: X64Class::CLASS_SSE,
+                meaningful_bits: byte_offset as u8 * 8 + 32,
+                // Only checked if this word ends up merged as SSE,
+                // and 2 floats are then passed as a vec in LLVM IR
+                vec: byte_offset == 4,
+            };
+            1
+        }
+        F64 => {
+            pieces[0] = Piece {
+                class: X64Class::CLASS_SSE,
+                meaningful_bits: byte_offset as u8 * 8 + 64,
+                vec: false,
+            };
             1
         }
         Array {
@@ -123,7 +152,7 @@ fn classify(
 
             assert!(bytes > 0, "TODO: zero-sized structs");
 
-            let mut subclasses = [X64Class::CLASS_NO_CLASS; 8];
+            let mut subpieces = [Piece::new(X64Class::CLASS_NO_CLASS); 8];
 
             const UNITS_PER_WORD: usize = 8;
             //TODO: Why add byte offset here? Are we clearing the previously set classes for some
@@ -147,8 +176,8 @@ fn classify(
                 let offset = LLVMOffsetOfElement(llvmgen.data_layout, llvm_type, i as u32) as usize;
 
                 let byte_offset = byte_offset + offset;
-                // Not sure why we get the remainder here
-                let num = classify(llvmgen, &member.data_type, &mut subclasses, byte_offset % 8);
+                // We get the remainder here since we consider the offset inside the word
+                let num = classify(llvmgen, &member.data_type, &mut subpieces, byte_offset % 8);
 
                 if num == 0 {
                     return 0;
@@ -157,7 +186,13 @@ fn classify(
                 let pos = byte_offset / 8;
                 let mut i = 0;
                 while i < num && (i + pos) < words {
-                    classes[i + pos] = merge_classes(subclasses[i], classes[i + pos]);
+                    let subpiece = &subpieces[i];
+                    let piece = &mut pieces[i + pos];
+                    piece.vec = (piece.vec || subpiece.vec)
+                        && piece.class == X64Class::CLASS_SSE
+                        && subpiece.class == X64Class::CLASS_SSE;
+                    piece.class = merge_classes(subpiece.class, piece.class);
+                    piece.meaningful_bits = piece.meaningful_bits.max(subpiece.meaningful_bits);
                     i += 1;
                 }
             }
@@ -168,12 +203,13 @@ fn classify(
                 X86_64_SSEUP_CLASS, everything should be passed in
                 memory.  */
 
-                if classes[0] != X64Class::CLASS_SSE {
+                if pieces[0].class != X64Class::CLASS_SSE {
                     return 0;
                 }
 
-                for class in &classes[1..] {
-                    if *class != X64Class::CLASS_SSEUP {
+                //TODO remove this as I never use SSEUP
+                for piece in &pieces[1..words] {
+                    if piece.class != X64Class::CLASS_SSEUP {
                         return 0;
                     }
                 }
@@ -183,20 +219,20 @@ fn classify(
             for i in 0..words {
                 /* If one class is MEMORY, everything should be passed in
                 memory.  */
-                if classes[i] == X64Class::CLASS_MEMORY {
+                if pieces[i].class == X64Class::CLASS_MEMORY {
                     return 0;
                 }
 
                 /* The X86_64_SSEUP_CLASS should be always preceded by
                 X86_64_SSE_CLASS or X86_64_SSEUP_CLASS.  */
                 if i > 1
-                    && classes[i] == X64Class::CLASS_SSEUP
-                    && classes[i - 1] != X64Class::CLASS_SSE
-                    && classes[i - 1] != X64Class::CLASS_SSEUP
+                    && pieces[i].class == X64Class::CLASS_SSEUP
+                    && pieces[i - 1].class != X64Class::CLASS_SSE
+                    && pieces[i - 1].class != X64Class::CLASS_SSEUP
                 {
                     /* The first one should never be X86_64_SSEUP_CLASS.  */
                     // assert!(i != 0); // Redundant check since we have if i > 1
-                    classes[i] = X64Class::CLASS_SSE;
+                    pieces[i].class = X64Class::CLASS_SSE;
                 }
             }
 
@@ -226,7 +262,7 @@ fn merge_classes(class1: X64Class, class2: X64Class) -> X64Class {
     }
 
     /* Rule #4: If one of the classes is INTEGER, the result is INTEGER.  */
-    if class1 == X64Class::CLASS_INTEGER || class1 == X64Class::CLASS_INTEGER {
+    if class1 == X64Class::CLASS_INTEGER || class2 == X64Class::CLASS_INTEGER {
         return X64Class::CLASS_INTEGER;
     }
 
@@ -246,8 +282,8 @@ fn merge_classes(class1: X64Class, class2: X64Class) -> X64Class {
 
 #[derive(Debug)]
 pub struct FuncABIInfo {
-    ret: ABIArgInfo,
-    args: Vec<ABIArgInfo>,
+    pub ret: ABIArgInfo,
+    pub args: Vec<ABIArgInfo>,
 }
 
 pub struct AbiType {}
@@ -259,8 +295,8 @@ struct Registers {
 
 #[derive(Debug)]
 pub enum ABIArgInfo {
-    Single(X64Class),
-    Aggregate([X64Class; 8], usize),
+    Single(Piece),
+    Aggregate([Piece; 8], usize),
 }
 
 #[derive(PartialEq, Eq)]
@@ -277,10 +313,49 @@ pub enum ABIKind {
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub struct Piece {
+    pub class: X64Class,
+    pub meaningful_bits: u8,
+    pub vec: bool,
+}
+
+impl Piece {
+    pub fn new(class: X64Class) -> Piece {
+        Piece {
+            class,
+            meaningful_bits: 0,
+            vec: false,
+        }
+    }
+}
+
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum X64Class {
     CLASS_NO_CLASS,
     CLASS_MEMORY,
     CLASS_INTEGER,
     CLASS_SSE,
     CLASS_SSEUP,
+}
+
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum ABIPiece {
+    Integer { bits: usize },
+    Float { bits: usize },
+    Vector { element_bits: usize, count: usize },
+}
+
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum LLVMCoerceType {
+    i8,
+    i16,
+    i24,
+    i32,
+    i40,
+    i48,
+    i56,
+    i64,
+    Float,
+    Floatx2,
+    Double,
 }

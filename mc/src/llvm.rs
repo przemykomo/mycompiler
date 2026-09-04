@@ -10,6 +10,8 @@ use inkwell::llvm_sys::target_machine::LLVMCodeGenFileType::LLVMObjectFile;
 use inkwell::llvm_sys::target_machine::LLVMCodeGenOptLevel::LLVMCodeGenLevelNone;
 use inkwell::llvm_sys::target_machine::*;
 
+use crate::abi_sysv::ABIArgInfo;
+use crate::abi_sysv::X64Class;
 use crate::abi_sysv::create_abi_info;
 use crate::typecheck::BlockReturnActuality::AlwaysReturns;
 use crate::typecheck::Place;
@@ -188,22 +190,135 @@ impl<'a> LLVMGen<'a> {
     }
 
     fn add_fn_decl(&mut self, decl: &crate::ast::FunctionPrototype) -> LLVMValueRef {
-        println!("{}", decl.ident.ident);
-        dbg!(create_abi_info(self, decl));
-
-        let ret_type = self.to_llvm_type(&decl.return_type);
-        let mut param_types: Vec<LLVMTypeRef> = decl
-            .arguments
-            .iter()
-            .map(|(_, ty)| self.to_llvm_type(ty))
-            .collect();
         unsafe {
-            let fn_type = LLVMFunctionType(
-                ret_type,
-                param_types.as_mut_ptr(),
-                param_types.len() as u32,
-                0,
-            );
+            let func_abi_info = create_abi_info(self, decl);
+            let mut params: Vec<LLVMTypeRef> = Vec::new();
+            let retval = if decl.return_type.is_scalar() {
+                self.to_llvm_type(&decl.return_type)
+            } else {
+                match func_abi_info.ret {
+                    ABIArgInfo::Single(piece) => match piece.class {
+                        X64Class::CLASS_NO_CLASS => LLVMVoidTypeInContext(self.context),
+                        X64Class::CLASS_MEMORY => {
+                            //Add ptr as a first param
+                            params.push(LLVMPointerTypeInContext(self.context, 0));
+                            LLVMVoidTypeInContext(self.context)
+                        }
+                        X64Class::CLASS_INTEGER => LLVMInt64TypeInContext(self.context),
+                        X64Class::CLASS_SSE => {
+                            if piece.vec {
+                                let f = LLVMFloatTypeInContext(self.context);
+                                LLVMVectorType(f, 2)
+                            } else if piece.meaningful_bits == 32 {
+                                LLVMFloatTypeInContext(self.context)
+                            } else {
+                                LLVMDoubleTypeInContext(self.context)
+                            }
+                        }
+                        X64Class::CLASS_SSEUP => todo!(),
+                    },
+                    ABIArgInfo::Aggregate(pieces, words) => {
+                        assert!(words <= 2);
+
+                        let mut members: Vec<LLVMTypeRef> = Vec::new();
+
+                        for piece in &pieces[..words] {
+                            match piece.class {
+                                X64Class::CLASS_NO_CLASS | X64Class::CLASS_MEMORY => unreachable!(),
+                                X64Class::CLASS_INTEGER => {
+                                    members.push(LLVMInt64TypeInContext(self.context));
+                                }
+                                X64Class::CLASS_SSE => {
+                                    let m = if piece.vec {
+                                        let f = LLVMFloatTypeInContext(self.context);
+                                        LLVMVectorType(f, 2)
+                                    } else if piece.meaningful_bits == 32 {
+                                        LLVMFloatTypeInContext(self.context)
+                                    } else {
+                                        LLVMDoubleTypeInContext(self.context)
+                                    };
+                                    members.push(m);
+                                }
+                                X64Class::CLASS_SSEUP => todo!(),
+                            }
+                        }
+                        LLVMStructTypeInContext(
+                            self.context,
+                            members.as_mut_ptr(),
+                            members.len() as u32,
+                            0,
+                        )
+                    }
+                }
+            };
+
+            for (abi, (_, data_type)) in func_abi_info.args.iter().zip(&decl.arguments) {
+                if data_type.is_scalar() {
+                    params.push(self.to_llvm_type(data_type));
+                    continue;
+                }
+                match abi {
+                    ABIArgInfo::Single(piece) => match piece.class {
+                        X64Class::CLASS_NO_CLASS => {}
+                        X64Class::CLASS_MEMORY => {
+                            params.push(LLVMPointerTypeInContext(self.context, 0));
+                        }
+                        X64Class::CLASS_INTEGER => {
+                            params.push(LLVMInt64TypeInContext(self.context))
+                        }
+                        X64Class::CLASS_SSE => {
+                            let p = if piece.vec {
+                                let f = LLVMFloatTypeInContext(self.context);
+                                LLVMVectorType(f, 2)
+                            } else if piece.meaningful_bits == 32 {
+                                LLVMFloatTypeInContext(self.context)
+                            } else {
+                                LLVMDoubleTypeInContext(self.context)
+                            };
+                            params.push(p);
+                        }
+                        X64Class::CLASS_SSEUP => unreachable!(),
+                    },
+                    ABIArgInfo::Aggregate(pieces, words) => {
+                        assert!(*words <= 2);
+                        for piece in &pieces[..*words] {
+                            match piece.class {
+                                X64Class::CLASS_NO_CLASS | X64Class::CLASS_MEMORY => unreachable!(),
+                                X64Class::CLASS_INTEGER => {
+                                    params.push(LLVMInt64TypeInContext(self.context));
+                                }
+                                X64Class::CLASS_SSE => {
+                                    let m = if piece.vec {
+                                        let f = LLVMFloatTypeInContext(self.context);
+                                        LLVMVectorType(f, 2)
+                                    } else if piece.meaningful_bits == 32 {
+                                        LLVMFloatTypeInContext(self.context)
+                                    } else {
+                                        LLVMDoubleTypeInContext(self.context)
+                                    };
+                                    params.push(m);
+                                }
+                                X64Class::CLASS_SSEUP => todo!(),
+                            }
+                        }
+                    }
+                }
+            }
+
+            let fn_type = LLVMFunctionType(retval, params.as_mut_ptr(), params.len() as u32, 0);
+
+            // let ret_type = self.to_llvm_type(&decl.return_type);
+            // let mut param_types: Vec<LLVMTypeRef> = decl
+            //     .arguments
+            //     .iter()
+            //     .map(|(_, ty)| self.to_llvm_type(ty))
+            //     .collect();
+            // let fn_type = LLVMFunctionType(
+            //     ret_type,
+            //     param_types.as_mut_ptr(),
+            //     param_types.len() as u32,
+            //     0,
+            // );
             let name = CString::new(decl.ident.ident.as_bytes()).unwrap();
             LLVMAddFunction(self.module, name.as_ptr(), fn_type)
         }

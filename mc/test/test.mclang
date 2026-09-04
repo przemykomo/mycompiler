@@ -1,18 +1,19 @@
-fn printf(c: *char);
-fn abi_test(a: i32, b: i8, c: i64, d: f32, e: f64) -> grzybex;
-fn abi_second(g: grzybex) -> i32;
-
 struct grzybex {
     a: i64,
     b: i32,
-    f: f32
+    f: f32,
+    c: i64
 }
 
-fn myfunc() {
-    printf("myfunc");
+struct s {
+    a: i16,
+    b: i16
 }
 
 public fn main() -> i32 {
-    let g: grzybex = abi_test(12, 5, 3, 3.0, 4.2);
-    return g.b;
+    return 0;
+}
+
+fn abi_second(g: grzybex, i: i32, b: i8, testarg: s) {
+
 }

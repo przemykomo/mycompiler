@@ -86,6 +86,7 @@ impl DataType {
     }
 
     pub fn is_scalar(&self) -> bool {
+        //TODO check for Void?
         use DataType::*;
         !matches!(self, Array { .. } | Struct { .. })
     }

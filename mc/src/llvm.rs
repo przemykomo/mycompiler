@@ -120,6 +120,7 @@ impl<'a> LLVMGen<'a> {
 
                 let mut scope = Scope { vars: Vec::new() };
 
+                //TODO: This somehow works, but I think I should set it to 1 if there is sret arg?
                 let mut ir_param = 0;
 
                 for (abi, (ident, data_type)) in
@@ -805,28 +806,206 @@ impl<'a> LLVMGen<'a> {
                     }
 
                     val
-                    // todo!(
-                    //     "Make struct literals special case as I think they are only valid for assignment, args and ==, or just find a way to get LLVMValueRef for an entire struct"
-                    // );
                 }
-                TypedExprKind::Call(func, args) => {
-                    let func = CString::new(func.clone()).unwrap();
-                    let fn_ref = LLVMGetNamedFunction(self.module, func.as_ptr());
+                TypedExprKind::Call(func, args_exprs) => {
+                    let (decl, _) = self.typechecker.parser.get_function(func).unwrap();
+                    let func_abi_info = create_abi_info(self, decl);
+                    let func_c_str = CString::new(func.clone()).unwrap();
+                    let fn_ref = LLVMGetNamedFunction(self.module, func_c_str.as_ptr());
                     let fn_type = LLVMGlobalGetValueType(fn_ref);
 
-                    let mut args: Vec<LLVMValueRef> = args
-                        .iter()
-                        .map(|expr| self.compile_expression(expr, scope))
-                        .collect();
+                    // let mut args: Vec<LLVMValueRef> = args
+                    //     .iter()
+                    //     .map(|expr| self.compile_expression(expr, scope))
+                    //     .collect();
 
-                    LLVMBuildCall2(
-                        self.builder,
-                        fn_type,
-                        fn_ref,
-                        args.as_mut_ptr(),
-                        args.len() as u32,
-                        c"".as_ptr(),
-                    )
+                    let mut args: Vec<LLVMValueRef> = Vec::new();
+                    let ret_ptr = if decl.return_type.is_scalar() {
+                        None
+                    } else {
+                        if let ABIArgInfo::Single(Piece {
+                            class: X64Class::CLASS_MEMORY,
+                            ..
+                        }) = func_abi_info.ret
+                        {
+                            let dst = LLVMBuildAlloca(
+                                self.builder,
+                                self.to_llvm_type(&decl.return_type),
+                                c"ret".as_ptr(),
+                            );
+                            args.push(dst);
+                            Some(dst)
+                        } else {
+                            None
+                        }
+                    };
+
+                    for ((abi, (_, data_type)), expr) in func_abi_info
+                        .args
+                        .iter()
+                        .zip(&decl.arguments)
+                        .zip(args_exprs)
+                    {
+                        let val = self.compile_expression(expr, scope);
+                        if data_type.is_scalar() {
+                            args.push(val);
+                            continue;
+                        }
+
+                        match abi {
+                            ABIArgInfo::Single(piece) => match piece.class {
+                                X64Class::CLASS_NO_CLASS => {}
+                                X64Class::CLASS_MEMORY => {
+                                    let alloca = LLVMBuildAlloca(
+                                        self.builder,
+                                        self.to_llvm_type(data_type),
+                                        c"arg".as_ptr(),
+                                    );
+                                    LLVMBuildStore(self.builder, val, alloca);
+                                    args.push(alloca);
+                                }
+                                X64Class::CLASS_INTEGER => {
+                                    let ext = LLVMBuildZExtOrBitCast(
+                                        self.builder,
+                                        val,
+                                        LLVMInt64TypeInContext(self.context),
+                                        c"ext".as_ptr(),
+                                    );
+                                    args.push(ext);
+                                }
+                                X64Class::CLASS_SSE => {
+                                    args.push(val);
+                                }
+                                X64Class::CLASS_SSEUP => todo!(),
+                            },
+                            ABIArgInfo::Aggregate(pieces, words) => {
+                                let alloca = LLVMBuildAlloca(
+                                    self.builder,
+                                    self.to_llvm_type(data_type),
+                                    c"arg".as_ptr(),
+                                );
+                                LLVMBuildStore(self.builder, val, alloca);
+
+                                // Index the alloca'd struct ptr as if it's an array of
+                                // eightbytes and load the values piece by piece
+                                let word_type = LLVMInt64TypeInContext(self.context);
+                                for word in 0..*words {
+                                    let mut index = LLVMConstInt(
+                                        LLVMInt32TypeInContext(self.context),
+                                        word as u64,
+                                        0,
+                                    );
+                                    let ptr = LLVMBuildGEP2(
+                                        self.builder,
+                                        word_type,
+                                        alloca,
+                                        &mut index,
+                                        1,
+                                        c"gep".as_ptr(),
+                                    );
+                                    match pieces[word].class {
+                                        X64Class::CLASS_NO_CLASS | X64Class::CLASS_MEMORY => {
+                                            unreachable!()
+                                        }
+                                        X64Class::CLASS_INTEGER => {
+                                            // IR param is always i64, but I might need to store less
+                                            // bits. TODO: Possibly just change the IR param type
+                                            // itself instead of extending here.
+                                            let meaningful_bits_type = LLVMIntTypeInContext(
+                                                self.context,
+                                                pieces[word].meaningful_bits as u32,
+                                            );
+                                            let val = LLVMBuildLoad2(
+                                                self.builder,
+                                                meaningful_bits_type,
+                                                ptr,
+                                                c"int_val".as_ptr(),
+                                            );
+                                            let ext = LLVMBuildZExtOrBitCast(
+                                                self.builder,
+                                                val,
+                                                LLVMInt64TypeInContext(self.context),
+                                                c"ext".as_ptr(),
+                                            );
+                                            args.push(ext);
+                                        }
+                                        X64Class::CLASS_SSE => {
+                                            let p = LLVMGetParam(fn_ref, args.len() as u32);
+                                            let ty = LLVMTypeOf(p);
+                                            let val = LLVMBuildLoad2(
+                                                self.builder,
+                                                ty,
+                                                ptr,
+                                                c"float_val".as_ptr(),
+                                            );
+                                            args.push(val);
+                                        }
+                                        X64Class::CLASS_SSEUP => todo!(),
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    //TODO add params attributes to the call
+                    if decl.return_type.is_scalar() {
+                        LLVMBuildCall2(
+                            self.builder,
+                            fn_type,
+                            fn_ref,
+                            args.as_mut_ptr(),
+                            args.len() as u32,
+                            c"".as_ptr(),
+                        )
+                    } else if let Some(dst) = ret_ptr {
+                        LLVMBuildCall2(
+                            self.builder,
+                            fn_type,
+                            fn_ref,
+                            args.as_mut_ptr(),
+                            args.len() as u32,
+                            c"".as_ptr(),
+                        );
+                        LLVMBuildLoad2(
+                            self.builder,
+                            self.to_llvm_type(&decl.return_type),
+                            dst,
+                            c"call_retval".as_ptr(),
+                        )
+                    } else {
+                        let call_val = LLVMBuildCall2(
+                            self.builder,
+                            fn_type,
+                            fn_ref,
+                            args.as_mut_ptr(),
+                            args.len() as u32,
+                            c"".as_ptr(),
+                        );
+
+                        // Clang casts it by doing memcpy so
+                        let src_type = LLVMGetReturnType(LLVMGlobalGetValueType(fn_ref));
+                        let src =
+                            LLVMBuildAlloca(self.builder, src_type, c"callval.coerce".as_ptr());
+                        let dst_type = self.to_llvm_type(&decl.return_type);
+                        let dst = LLVMBuildAlloca(self.builder, dst_type, c"callval".as_ptr());
+
+                        LLVMBuildStore(self.builder, call_val, src);
+                        LLVMBuildMemCpy(
+                            self.builder,
+                            dst,
+                            LLVMGetAlignment(dst),
+                            src,
+                            LLVMGetAlignment(src),
+                            LLVMSizeOf(dst_type),
+                        );
+
+                        LLVMBuildLoad2(
+                            self.builder,
+                            self.to_llvm_type(&decl.return_type),
+                            dst,
+                            c"call_retval".as_ptr(),
+                        )
+                    }
                 }
             }
         }

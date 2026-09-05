@@ -269,6 +269,7 @@ impl<'a> LLVMGen<'a> {
                         &mut scope,
                         &function.prototype.return_type,
                         fn_ref,
+                        &func_abi_info,
                     );
                 }
 
@@ -314,6 +315,13 @@ impl<'a> LLVMGen<'a> {
                         X64Class::CLASS_MEMORY => {
                             //Add ptr as a first param
                             params.push(LLVMPointerTypeInContext(self.context, 0));
+                            let attr = LLVMCreateTypeAttribute(
+                                self.context,
+                                LLVMGetEnumAttributeKindForName(c"sret".as_ptr(), 4),
+                                self.to_llvm_type(&decl.return_type),
+                            );
+                            // Params are 1 indexed
+                            attributes.push((attr, 1));
                             LLVMVoidTypeInContext(self.context)
                         }
                         X64Class::CLASS_INTEGER => LLVMInt64TypeInContext(self.context),
@@ -488,6 +496,7 @@ impl<'a> LLVMGen<'a> {
         scope: &mut Scope,
         return_type: &DataType,
         fn_ref: LLVMValueRef,
+        func_abi_info: &FuncABIInfo,
     ) {
         unsafe {
             match &statement.kind {
@@ -528,7 +537,7 @@ impl<'a> LLVMGen<'a> {
 
                     LLVMAppendExistingBasicBlock(fn_ref, then_block);
                     LLVMPositionBuilderAtEnd(self.builder, then_block);
-                    self.subscope(scope, return_type, then_scope, fn_ref);
+                    self.subscope(scope, return_type, then_scope, fn_ref, func_abi_info);
 
                     if then_scope.return_actuality != AlwaysReturns {
                         LLVMBuildBr(self.builder, end_block);
@@ -537,7 +546,7 @@ impl<'a> LLVMGen<'a> {
                     if let Some(else_scope) = else_scope {
                         LLVMAppendExistingBasicBlock(fn_ref, else_block);
                         LLVMPositionBuilderAtEnd(self.builder, else_block);
-                        self.subscope(scope, return_type, else_scope, fn_ref);
+                        self.subscope(scope, return_type, else_scope, fn_ref, func_abi_info);
                         if else_scope.return_actuality != AlwaysReturns {
                             LLVMBuildBr(self.builder, end_block);
                         }
@@ -549,12 +558,46 @@ impl<'a> LLVMGen<'a> {
                     }
                 }
                 TypedStmtKind::Return(expr) => {
-                    if let Some(expr) = expr {
-                        let value = self.compile_expression(expr, scope);
-                        LLVMBuildRet(self.builder, value);
-                    } else {
+                    let Some(expr) = expr else {
                         LLVMBuildRetVoid(self.builder);
+                        return;
+                    };
+
+                    let value = self.compile_expression(expr, scope);
+                    if return_type.is_scalar() {
+                        LLVMBuildRet(self.builder, value);
+                        return;
                     }
+
+                    if let ABIArgInfo::Single(Piece {
+                        class: X64Class::CLASS_MEMORY,
+                        ..
+                    }) = func_abi_info.ret
+                    {
+                        LLVMBuildStore(self.builder, value, LLVMGetParam(fn_ref, 0));
+                        LLVMBuildRetVoid(self.builder);
+                        return;
+                    }
+
+                    // Clang casts it by doing memcpy so
+                    let src_type = self.to_llvm_type(return_type);
+                    let src = LLVMBuildAlloca(self.builder, src_type, c"retval".as_ptr());
+                    let dst_type = LLVMGetReturnType(LLVMGlobalGetValueType(fn_ref));
+                    let dst = LLVMBuildAlloca(self.builder, dst_type, c"retval.coerce".as_ptr());
+
+                    LLVMBuildStore(self.builder, value, src);
+                    LLVMBuildMemCpy(
+                        self.builder,
+                        dst,
+                        LLVMGetAlignment(dst),
+                        src,
+                        LLVMGetAlignment(src),
+                        LLVMSizeOf(src_type),
+                    );
+                    LLVMBuildRet(
+                        self.builder,
+                        LLVMBuildLoad2(self.builder, dst_type, dst, c"coerce".as_ptr()),
+                    );
                 }
                 TypedStmtKind::Expression(expr) => {
                     self.compile_expression(expr, scope);
@@ -632,9 +675,10 @@ impl<'a> LLVMGen<'a> {
         return_type: &DataType,
         typed_block: &TypedBlock,
         fn_ref: LLVMValueRef,
+        func_abi_info: &FuncABIInfo,
     ) {
         for statement in &typed_block.statements {
-            self.compile_statement(statement, scope, return_type, fn_ref);
+            self.compile_statement(statement, scope, return_type, fn_ref, func_abi_info);
         }
     }
 

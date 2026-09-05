@@ -1,19 +1,18 @@
-struct grzybex {
-    a: i64,
-    c: f32,
-    d: f32,
-    e: f64
-}
+fn cfun();
 
-struct s {
-    a: i16,
-    b: i16
+struct MyStruct {
+    a: i32,
+    c: i16,
+    d: f32,
+    e: f32,
+    l: i64
 }
 
 public fn main() -> i32 {
+    cfun();
     return 0;
 }
 
-fn abi_second(g: grzybex, i: i32, b: i8, testarg: s) {
-
+fn abi_second() -> MyStruct {
+    return MyStruct {a: 3, c: 1, d: 4, e: 3.14, l: 124};
 }

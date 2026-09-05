@@ -246,7 +246,6 @@ pub struct TypedBlock {
 
 impl<'a> TypeChecker<'a> {
     pub fn typecheck(&mut self) {
-
         // for dec in &self.parser.struct_declarations {
         //     self.err_on_recursive_structs(dec, &mut Vec::new());
         // }
@@ -623,7 +622,10 @@ impl<'a> TypeChecker<'a> {
             if !expr.coerce_to(&arg.1) {
                 self.errors.push(Error {
                     span,
-                    msg: "Mismatched types.".to_owned(),
+                    msg: format!(
+                        "Mismatched types: expected {:?}, got {:?}",
+                        &arg.1, &expr.inferred_type
+                    ),
                 });
                 return None;
             }
@@ -680,11 +682,14 @@ impl<'a> TypeChecker<'a> {
                     return None;
                 }
                 if let Some(expr) = expr {
-                    let expr = self.type_expr(scope, expr, None)?;
-                    if m.data_type != expr.inferred_type {
+                    let mut expr = self.type_expr(scope, expr, None)?;
+                    if !expr.coerce_to(&m.data_type) {
                         self.errors.push(Error {
                             span: ident.span,
-                            msg: "Mismatched types.".to_owned(),
+                            msg: format!(
+                                "Mismatched types: expected {:?}, got {:?}",
+                                &m.data_type, &expr.inferred_type
+                            ),
                         });
                         return None;
                     }

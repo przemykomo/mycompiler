@@ -12,6 +12,7 @@ use inkwell::llvm_sys::target_machine::*;
 
 use crate::abi_sysv::ABIArgInfo;
 use crate::abi_sysv::FuncABIInfo;
+use crate::abi_sysv::Piece;
 use crate::abi_sysv::X64Class;
 use crate::abi_sysv::create_abi_info;
 use crate::typecheck::BlockReturnActuality::AlwaysReturns;
@@ -124,6 +125,20 @@ impl<'a> LLVMGen<'a> {
                 for (abi, (ident, data_type)) in
                     func_abi_info.args.iter().zip(&function.prototype.arguments)
                 {
+                    if let ABIArgInfo::Single(Piece {
+                        class: X64Class::CLASS_MEMORY,
+                        ..
+                    }) = abi
+                    {
+                        scope.vars.push(Variable {
+                            ident: ident.clone(),
+                            data_type: data_type.clone(),
+                            ptr: LLVMGetParam(fn_ref, ir_param),
+                        });
+                        ir_param += 1;
+                        continue;
+                    }
+
                     let ptr = LLVMBuildAlloca(
                         self.builder,
                         self.to_llvm_type(&data_type),
@@ -148,7 +163,7 @@ impl<'a> LLVMGen<'a> {
                     match abi {
                         ABIArgInfo::Single(piece) => match piece.class {
                             X64Class::CLASS_NO_CLASS => {}
-                            X64Class::CLASS_MEMORY => todo!("ptr noundef byval"),
+                            X64Class::CLASS_MEMORY => unreachable!(),
                             X64Class::CLASS_INTEGER => {
                                 let meaningful_bits_type = LLVMIntTypeInContext(
                                     self.context,
@@ -197,7 +212,8 @@ impl<'a> LLVMGen<'a> {
                                     }
                                     X64Class::CLASS_INTEGER => {
                                         // IR param is always i64, but I might need to store less
-                                        // bits
+                                        // bits. TODO: Possibly just change the IR param type
+                                        // itself instead of truncating here.
                                         let meaningful_bits_type = LLVMIntTypeInContext(
                                             self.context,
                                             pieces[word].meaningful_bits as u32,
@@ -288,6 +304,7 @@ impl<'a> LLVMGen<'a> {
         unsafe {
             let func_abi_info = create_abi_info(self, decl);
             let mut params: Vec<LLVMTypeRef> = Vec::new();
+            let mut attributes: Vec<(LLVMAttributeRef, u32)> = Vec::new();
             let retval = if decl.return_type.is_scalar() {
                 self.to_llvm_type(&decl.return_type)
             } else {
@@ -357,6 +374,13 @@ impl<'a> LLVMGen<'a> {
                         X64Class::CLASS_NO_CLASS => {}
                         X64Class::CLASS_MEMORY => {
                             params.push(LLVMPointerTypeInContext(self.context, 0));
+                            let attr = LLVMCreateTypeAttribute(
+                                self.context,
+                                LLVMGetEnumAttributeKindForName(c"byval".as_ptr(), 5),
+                                self.to_llvm_type(data_type),
+                            );
+                            // Params are 1 indexed
+                            attributes.push((attr, params.len() as u32));
                         }
                         X64Class::CLASS_INTEGER => {
                             params.push(LLVMInt64TypeInContext(self.context))
@@ -402,23 +426,13 @@ impl<'a> LLVMGen<'a> {
 
             let fn_type = LLVMFunctionType(retval, params.as_mut_ptr(), params.len() as u32, 0);
 
-            // let ret_type = self.to_llvm_type(&decl.return_type);
-            // let mut param_types: Vec<LLVMTypeRef> = decl
-            //     .arguments
-            //     .iter()
-            //     .map(|(_, ty)| self.to_llvm_type(ty))
-            //     .collect();
-            // let fn_type = LLVMFunctionType(
-            //     ret_type,
-            //     param_types.as_mut_ptr(),
-            //     param_types.len() as u32,
-            //     0,
-            // );
             let name = CString::new(decl.ident.ident.as_bytes()).unwrap();
-            (
-                LLVMAddFunction(self.module, name.as_ptr(), fn_type),
-                func_abi_info,
-            )
+            let fn_val = LLVMAddFunction(self.module, name.as_ptr(), fn_type);
+
+            for (attr, i) in attributes {
+                LLVMAddAttributeAtIndex(fn_val, i, attr);
+            }
+            (fn_val, func_abi_info)
         }
     }
 

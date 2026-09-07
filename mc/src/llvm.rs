@@ -1,14 +1,14 @@
 use std::ffi::CString;
 use std::ptr;
 
-use inkwell::llvm_sys::analysis::LLVMVerifierFailureAction;
-use inkwell::llvm_sys::analysis::LLVMVerifyFunction;
-use inkwell::llvm_sys::core::*;
-use inkwell::llvm_sys::prelude::*;
-use inkwell::llvm_sys::target::*;
-use inkwell::llvm_sys::target_machine::LLVMCodeGenFileType::LLVMObjectFile;
-use inkwell::llvm_sys::target_machine::LLVMCodeGenOptLevel::LLVMCodeGenLevelNone;
-use inkwell::llvm_sys::target_machine::*;
+use llvm_sys::analysis::LLVMVerifierFailureAction;
+use llvm_sys::analysis::LLVMVerifyFunction;
+use llvm_sys::core::*;
+use llvm_sys::prelude::*;
+use llvm_sys::target::*;
+use llvm_sys::target_machine::LLVMCodeGenFileType::LLVMObjectFile;
+use llvm_sys::target_machine::LLVMCodeGenOptLevel::LLVMCodeGenLevelNone;
+use llvm_sys::target_machine::*;
 
 use crate::abi_sysv::ABIArgInfo;
 use crate::abi_sysv::FuncABIInfo;

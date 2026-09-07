@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use inkwell::llvm_sys::{
+use llvm_sys::{
     LLVMIntPredicate::{self, *},
     LLVMRealPredicate,
 };

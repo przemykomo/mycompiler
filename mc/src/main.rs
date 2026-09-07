@@ -4,8 +4,8 @@ use std::fs;
 
 mod tokenizer;
 mod typecheck;
-use inkwell::llvm_sys::core::LLVMContextCreate;
-use inkwell::llvm_sys::core::LLVMDumpModule;
+use llvm_sys::core::LLVMContextCreate;
+use llvm_sys::core::LLVMDumpModule;
 use tokenizer::*;
 
 pub mod parser;

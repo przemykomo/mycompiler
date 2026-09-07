@@ -1,7 +1,7 @@
 // Based on the C3 compiler implementation
 
 #![allow(nonstandard_style)]
-use inkwell::llvm_sys::target::{LLVMABISizeOfType, LLVMOffsetOfElement};
+use llvm_sys::target::{LLVMABISizeOfType, LLVMOffsetOfElement};
 
 use crate::{
     ast::FunctionPrototype,

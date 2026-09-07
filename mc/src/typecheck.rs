@@ -11,10 +11,7 @@ use crate::{
         DataType::{self, *},
         Error, Span,
     },
-    typecheck::{
-        self,
-        BlockReturnActuality::{AlwaysReturns, NeverReturns, SometimesReturns},
-    },
+    typecheck::BlockReturnActuality::{AlwaysReturns, NeverReturns, SometimesReturns},
 };
 
 pub struct List<'a, T: Display>(pub &'a [T]);

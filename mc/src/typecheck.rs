@@ -243,9 +243,9 @@ pub struct TypedBlock {
 
 impl<'a> TypeChecker<'a> {
     pub fn typecheck(&mut self) {
-        // for dec in &self.parser.struct_declarations {
-        //     self.err_on_recursive_structs(dec, &mut Vec::new());
-        // }
+        for dec in &self.parser.struct_declarations {
+            self.err_on_recursive_structs(dec, &mut Vec::new());
+        }
 
         for def in &self.parser.functions {
             self.type_func(def);
@@ -261,11 +261,14 @@ impl<'a> TypeChecker<'a> {
     {
         stack.push(dec);
         for member in &dec.members {
+            let DataType::Struct(ident) = &member.data_type else {
+                continue;
+            };
             let member_dec = self
                 .parser
                 .struct_declarations
                 .iter()
-                .find(|s| s.ident.ident == member.ident.ident)
+                .find(|s| s.ident.ident == ident.ident)
                 .unwrap();
             if stack
                 .iter()

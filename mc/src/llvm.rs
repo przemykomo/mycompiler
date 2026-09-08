@@ -10,11 +10,11 @@ use llvm_sys::target_machine::LLVMCodeGenFileType::LLVMObjectFile;
 use llvm_sys::target_machine::LLVMCodeGenOptLevel::LLVMCodeGenLevelNone;
 use llvm_sys::target_machine::*;
 
-use crate::abi_sysv::ABIArgInfo;
 use crate::abi_sysv::FuncABIInfo;
-use crate::abi_sysv::Piece;
-use crate::abi_sysv::X64Class;
-use crate::abi_sysv::create_abi_info;
+use crate::abi_sysv::add_fn_decl;
+use crate::abi_sysv::build_ret;
+use crate::abi_sysv::call;
+use crate::abi_sysv::fun_prologue;
 use crate::typecheck::BlockReturnActuality::AlwaysReturns;
 use crate::typecheck::Place;
 use crate::typecheck::PlaceKind;
@@ -26,7 +26,7 @@ use crate::{
 
 #[derive(Debug)]
 pub struct Variable {
-    ident: IdentifierSpanned,
+    pub ident: IdentifierSpanned,
     pub data_type: DataType,
     pub ptr: LLVMValueRef,
 }
@@ -45,8 +45,8 @@ impl Scope {
 pub struct LLVMGen<'a> {
     pub typechecker: &'a TypeChecker<'a>,
     pub errors: Vec<Error>,
-    context: LLVMContextRef,
-    builder: LLVMBuilderRef,
+    pub context: LLVMContextRef,
+    pub builder: LLVMBuilderRef,
     pub module: LLVMModuleRef,
     id_count: usize,
     pub data_layout: LLVMTargetDataRef,
@@ -108,11 +108,11 @@ impl<'a> LLVMGen<'a> {
 
     pub fn generate_ir(&mut self) {
         for decl in &self.typechecker.parser.function_declarations {
-            self.add_fn_decl(decl);
+            add_fn_decl(self, decl);
         }
 
         for function in &self.typechecker.typed_functions {
-            let (fn_ref, func_abi_info) = self.add_fn_decl(&function.prototype);
+            let (fn_ref, func_abi_info) = add_fn_decl(self, &function.prototype);
             unsafe {
                 let entry_block =
                     LLVMAppendBasicBlockInContext(self.context, fn_ref, c"entry".as_ptr());
@@ -120,149 +120,7 @@ impl<'a> LLVMGen<'a> {
 
                 let mut scope = Scope { vars: Vec::new() };
 
-                //TODO: This somehow works, but I think I should set it to 1 if there is sret arg?
-                let mut ir_param = 0;
-
-                for (abi, (ident, data_type)) in
-                    func_abi_info.args.iter().zip(&function.prototype.arguments)
-                {
-                    if let ABIArgInfo::Single(Piece {
-                        class: X64Class::CLASS_MEMORY,
-                        ..
-                    }) = abi
-                    {
-                        scope.vars.push(Variable {
-                            ident: ident.clone(),
-                            data_type: data_type.clone(),
-                            ptr: LLVMGetParam(fn_ref, ir_param),
-                        });
-                        ir_param += 1;
-                        continue;
-                    }
-
-                    let ptr = LLVMBuildAlloca(
-                        self.builder,
-                        self.to_llvm_type(&data_type),
-                        CString::new(ident.ident.clone()).unwrap().as_ptr(),
-                    );
-
-                    scope.vars.push(Variable {
-                        ident: ident.clone(),
-                        data_type: data_type.clone(),
-                        ptr,
-                    });
-
-                    if data_type.is_scalar() {
-                        let param = LLVMGetParam(fn_ref, ir_param);
-                        LLVMBuildStore(self.builder, param, ptr);
-                        ir_param += 1;
-                        continue;
-                    }
-                    //Reconstruct the aggregate from ABI complaint IR args
-                    //There might be problems if the struct isn't aligned, but I think it always
-                    //is in my case
-                    match abi {
-                        ABIArgInfo::Single(piece) => match piece.class {
-                            X64Class::CLASS_NO_CLASS => {}
-                            X64Class::CLASS_MEMORY => unreachable!(),
-                            X64Class::CLASS_INTEGER => {
-                                let meaningful_bits_type = LLVMIntTypeInContext(
-                                    self.context,
-                                    piece.meaningful_bits as u32,
-                                );
-
-                                let param = LLVMBuildTrunc(
-                                    self.builder,
-                                    LLVMGetParam(fn_ref, ir_param),
-                                    meaningful_bits_type,
-                                    c"int_bits".as_ptr(),
-                                );
-                                LLVMBuildStore(self.builder, param, ptr);
-                                ir_param += 1;
-                            }
-                            X64Class::CLASS_SSE => {
-                                // Simply use the IR param type
-                                let param = LLVMGetParam(fn_ref, ir_param);
-                                LLVMBuildStore(self.builder, param, ptr);
-                                ir_param += 1;
-                            }
-                            X64Class::CLASS_SSEUP => todo!(),
-                        },
-                        ABIArgInfo::Aggregate(pieces, words) => {
-                            // Index the alloca'd struct ptr as if it's an array of
-                            // eightbytes and store the values piece by piece
-                            let word_type = LLVMInt64TypeInContext(self.context);
-                            for word in 0..*words {
-                                let mut index = LLVMConstInt(
-                                    LLVMInt32TypeInContext(self.context),
-                                    word as u64,
-                                    0,
-                                );
-                                let mut ptr = LLVMBuildGEP2(
-                                    self.builder,
-                                    word_type,
-                                    ptr,
-                                    &mut index,
-                                    1,
-                                    c"gep".as_ptr(),
-                                );
-
-                                match pieces[word].class {
-                                    X64Class::CLASS_NO_CLASS | X64Class::CLASS_MEMORY => {
-                                        unreachable!()
-                                    }
-                                    X64Class::CLASS_INTEGER => {
-                                        // IR param is always i64, but I might need to store less
-                                        // bits. TODO: Possibly just change the IR param type
-                                        // itself instead of truncating here.
-                                        let meaningful_bits_type = LLVMIntTypeInContext(
-                                            self.context,
-                                            pieces[word].meaningful_bits as u32,
-                                        );
-
-                                        ptr = LLVMBuildBitCast(
-                                            self.builder,
-                                            ptr,
-                                            LLVMPointerType(meaningful_bits_type, 0),
-                                            c"int_ptr".as_ptr(),
-                                        );
-
-                                        let param = LLVMBuildTrunc(
-                                            self.builder,
-                                            LLVMGetParam(fn_ref, ir_param),
-                                            meaningful_bits_type,
-                                            c"int_bits".as_ptr(),
-                                        );
-                                        LLVMBuildStore(self.builder, param, ptr);
-                                        ir_param += 1;
-                                    }
-                                    X64Class::CLASS_SSE => {
-                                        // Simply use the IR param type
-                                        let param = LLVMGetParam(fn_ref, ir_param);
-                                        LLVMBuildStore(self.builder, param, ptr);
-                                        ir_param += 1;
-                                    }
-                                    X64Class::CLASS_SSEUP => todo!(),
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // LLVM docs recommend to put all alloca at the function beginning
-                for var in &function.scope.vars[function.prototype.arguments.len()..] {
-                    let ptr = LLVMBuildAlloca(
-                        self.builder,
-                        self.to_llvm_type(&var.data_type),
-                        CString::new(var.ident.ident.clone()).unwrap().as_ptr(),
-                    );
-
-                    scope.vars.push(Variable {
-                        ident: var.ident.clone(),
-                        data_type: var.data_type.clone(),
-                        ptr,
-                    });
-                }
+                fun_prologue(self, function, fn_ref, &func_abi_info, &mut scope);
 
                 for statement in &function.block.statements {
                     self.compile_statement(
@@ -299,149 +157,6 @@ impl<'a> LLVMGen<'a> {
                 panic!("emit object file");
                 // panic!("{}", LLVMString::new(err_string));
             }
-        }
-    }
-
-    fn add_fn_decl(&mut self, decl: &crate::ast::FunctionPrototype) -> (LLVMValueRef, FuncABIInfo) {
-        unsafe {
-            let func_abi_info = create_abi_info(self, decl);
-            let mut params: Vec<LLVMTypeRef> = Vec::new();
-            let mut attributes: Vec<(LLVMAttributeRef, u32)> = Vec::new();
-            let retval = if decl.return_type.is_scalar() {
-                self.to_llvm_type(&decl.return_type)
-            } else {
-                match func_abi_info.ret {
-                    ABIArgInfo::Single(piece) => match piece.class {
-                        X64Class::CLASS_NO_CLASS => LLVMVoidTypeInContext(self.context),
-                        X64Class::CLASS_MEMORY => {
-                            //Add ptr as a first param
-                            params.push(LLVMPointerTypeInContext(self.context, 0));
-                            let attr = LLVMCreateTypeAttribute(
-                                self.context,
-                                LLVMGetEnumAttributeKindForName(c"sret".as_ptr(), 4),
-                                self.to_llvm_type(&decl.return_type),
-                            );
-                            // Params are 1 indexed
-                            attributes.push((attr, 1));
-                            LLVMVoidTypeInContext(self.context)
-                        }
-                        X64Class::CLASS_INTEGER => LLVMInt64TypeInContext(self.context),
-                        X64Class::CLASS_SSE => {
-                            if piece.vec {
-                                let f = LLVMFloatTypeInContext(self.context);
-                                LLVMVectorType(f, 2)
-                            } else if piece.meaningful_bits == 32 {
-                                LLVMFloatTypeInContext(self.context)
-                            } else {
-                                LLVMDoubleTypeInContext(self.context)
-                            }
-                        }
-                        X64Class::CLASS_SSEUP => todo!(),
-                    },
-                    ABIArgInfo::Aggregate(pieces, words) => {
-                        assert!(words <= 2);
-
-                        let mut members: Vec<LLVMTypeRef> = Vec::new();
-
-                        for piece in &pieces[..words] {
-                            match piece.class {
-                                X64Class::CLASS_NO_CLASS | X64Class::CLASS_MEMORY => unreachable!(),
-                                X64Class::CLASS_INTEGER => {
-                                    members.push(LLVMInt64TypeInContext(self.context));
-                                }
-                                X64Class::CLASS_SSE => {
-                                    let m = if piece.vec {
-                                        let f = LLVMFloatTypeInContext(self.context);
-                                        LLVMVectorType(f, 2)
-                                    } else if piece.meaningful_bits == 32 {
-                                        LLVMFloatTypeInContext(self.context)
-                                    } else {
-                                        LLVMDoubleTypeInContext(self.context)
-                                    };
-                                    members.push(m);
-                                }
-                                X64Class::CLASS_SSEUP => todo!(),
-                            }
-                        }
-                        LLVMStructTypeInContext(
-                            self.context,
-                            members.as_mut_ptr(),
-                            members.len() as u32,
-                            0,
-                        )
-                    }
-                }
-            };
-
-            for (abi, (_, data_type)) in func_abi_info.args.iter().zip(&decl.arguments) {
-                if data_type.is_scalar() {
-                    params.push(self.to_llvm_type(data_type));
-                    continue;
-                }
-                match abi {
-                    ABIArgInfo::Single(piece) => match piece.class {
-                        X64Class::CLASS_NO_CLASS => {}
-                        X64Class::CLASS_MEMORY => {
-                            params.push(LLVMPointerTypeInContext(self.context, 0));
-                            let attr = LLVMCreateTypeAttribute(
-                                self.context,
-                                LLVMGetEnumAttributeKindForName(c"byval".as_ptr(), 5),
-                                self.to_llvm_type(data_type),
-                            );
-                            // Params are 1 indexed
-                            attributes.push((attr, params.len() as u32));
-                        }
-                        X64Class::CLASS_INTEGER => {
-                            params.push(LLVMInt64TypeInContext(self.context))
-                        }
-                        X64Class::CLASS_SSE => {
-                            let p = if piece.vec {
-                                let f = LLVMFloatTypeInContext(self.context);
-                                LLVMVectorType(f, 2)
-                            } else if piece.meaningful_bits == 32 {
-                                LLVMFloatTypeInContext(self.context)
-                            } else {
-                                LLVMDoubleTypeInContext(self.context)
-                            };
-                            params.push(p);
-                        }
-                        X64Class::CLASS_SSEUP => unreachable!(),
-                    },
-                    ABIArgInfo::Aggregate(pieces, words) => {
-                        assert!(*words <= 2);
-                        for piece in &pieces[..*words] {
-                            match piece.class {
-                                X64Class::CLASS_NO_CLASS | X64Class::CLASS_MEMORY => unreachable!(),
-                                X64Class::CLASS_INTEGER => {
-                                    params.push(LLVMInt64TypeInContext(self.context));
-                                }
-                                X64Class::CLASS_SSE => {
-                                    let m = if piece.vec {
-                                        let f = LLVMFloatTypeInContext(self.context);
-                                        LLVMVectorType(f, 2)
-                                    } else if piece.meaningful_bits == 32 {
-                                        LLVMFloatTypeInContext(self.context)
-                                    } else {
-                                        LLVMDoubleTypeInContext(self.context)
-                                    };
-                                    params.push(m);
-                                }
-                                X64Class::CLASS_SSEUP => todo!(),
-                            }
-                        }
-                    }
-                }
-            }
-
-            let fn_type = LLVMFunctionType(retval, params.as_mut_ptr(), params.len() as u32, 0);
-
-            let name = CString::new(decl.ident.ident.as_bytes()).unwrap();
-            let fn_val = LLVMAddFunction(self.module, name.as_ptr(), fn_type);
-
-            for (attr, i) in attributes {
-                LLVMAddAttributeAtIndex(fn_val, i, attr);
-            }
-            (fn_val, func_abi_info)
         }
     }
 
@@ -559,92 +274,13 @@ impl<'a> LLVMGen<'a> {
                     }
                 }
                 TypedStmtKind::Return(expr) => {
-                    let Some(expr) = expr else {
-                        LLVMBuildRetVoid(self.builder);
-                        return;
-                    };
-
-                    let value = self.compile_expression(expr, scope);
-                    if return_type.is_scalar() {
-                        LLVMBuildRet(self.builder, value);
-                        return;
-                    }
-
-                    if let ABIArgInfo::Single(Piece {
-                        class: X64Class::CLASS_MEMORY,
-                        ..
-                    }) = func_abi_info.ret
-                    {
-                        LLVMBuildStore(self.builder, value, LLVMGetParam(fn_ref, 0));
-                        LLVMBuildRetVoid(self.builder);
-                        return;
-                    }
-
-                    // Clang casts it by doing memcpy so
-                    let src_type = self.to_llvm_type(return_type);
-                    let src = LLVMBuildAlloca(self.builder, src_type, c"retval".as_ptr());
-                    let dst_type = LLVMGetReturnType(LLVMGlobalGetValueType(fn_ref));
-                    let dst = LLVMBuildAlloca(self.builder, dst_type, c"retval.coerce".as_ptr());
-
-                    LLVMBuildStore(self.builder, value, src);
-                    LLVMBuildMemCpy(
-                        self.builder,
-                        dst,
-                        LLVMGetAlignment(dst),
-                        src,
-                        LLVMGetAlignment(src),
-                        LLVMSizeOf(src_type),
-                    );
-                    LLVMBuildRet(
-                        self.builder,
-                        LLVMBuildLoad2(self.builder, dst_type, dst, c"coerce".as_ptr()),
-                    );
+                    build_ret(self, scope, return_type, fn_ref, func_abi_info, expr);
                 }
                 TypedStmtKind::Expression(expr) => {
                     self.compile_expression(expr, scope);
                 }
                 TypedStmtKind::While { expr: _, block: _ } => {
                     todo!();
-                    // let label_begin = self.alloc_label();
-                    // let label_end = self.alloc_label();
-                    // scope.instructions.push(IRInstruction {
-                    //     id: self.alloc_inst(),
-                    //     r#type: IRType::Void,
-                    //     operation: Operation::Label(label_begin),
-                    // });
-                    //
-                    // let condition = expression
-                    //     .as_ref()
-                    //     .map(|expr| self.compile_expression(expr, scope))
-                    //     .flatten();
-                    //
-                    // if let Some((cond, data_type)) = condition {
-                    //     self.err_if_mismatched(
-                    //         &expression.as_ref().unwrap().span,
-                    //         data_type,
-                    //         DataType::Boolean,
-                    //     );
-                    //     scope.instructions.push(IRInstruction {
-                    //         id: self.alloc_inst(),
-                    //         r#type: IRType::Void,
-                    //         operation: Operation::JumpLabelIfNot {
-                    //             cond: cond[0],
-                    //             label: label_end,
-                    //         },
-                    //     });
-                    // }
-                    //
-                    // self.subscope(scope, return_type, current_frame_size, while_scope);
-                    // scope.instructions.push(IRInstruction {
-                    //     id: self.alloc_inst(),
-                    //     r#type: IRType::Void,
-                    //     operation: Operation::JumpLabel(label_begin),
-                    // });
-                    // scope.instructions.push(IRInstruction {
-                    //     id: self.alloc_inst(),
-                    //     r#type: IRType::Void,
-                    //     operation: Operation::Label(label_end),
-                    // });
                 }
 
                 TypedStmtKind::VariableDefinition {
@@ -683,7 +319,7 @@ impl<'a> LLVMGen<'a> {
         }
     }
 
-    fn compile_expression<'b>(&self, expr: &TypedExpr, scope: &Scope) -> LLVMValueRef {
+    pub fn compile_expression<'b>(&self, expr: &TypedExpr, scope: &Scope) -> LLVMValueRef {
         unsafe {
             match &expr.kind {
                 TypedExprKind::NumerLiteral(val) => {
@@ -807,206 +443,7 @@ impl<'a> LLVMGen<'a> {
 
                     val
                 }
-                TypedExprKind::Call(func, args_exprs) => {
-                    let (decl, _) = self.typechecker.parser.get_function(func).unwrap();
-                    let func_abi_info = create_abi_info(self, decl);
-                    let func_c_str = CString::new(func.clone()).unwrap();
-                    let fn_ref = LLVMGetNamedFunction(self.module, func_c_str.as_ptr());
-                    let fn_type = LLVMGlobalGetValueType(fn_ref);
-
-                    // let mut args: Vec<LLVMValueRef> = args
-                    //     .iter()
-                    //     .map(|expr| self.compile_expression(expr, scope))
-                    //     .collect();
-
-                    let mut args: Vec<LLVMValueRef> = Vec::new();
-                    let ret_ptr = if decl.return_type.is_scalar() {
-                        None
-                    } else {
-                        if let ABIArgInfo::Single(Piece {
-                            class: X64Class::CLASS_MEMORY,
-                            ..
-                        }) = func_abi_info.ret
-                        {
-                            let dst = LLVMBuildAlloca(
-                                self.builder,
-                                self.to_llvm_type(&decl.return_type),
-                                c"ret".as_ptr(),
-                            );
-                            args.push(dst);
-                            Some(dst)
-                        } else {
-                            None
-                        }
-                    };
-
-                    for ((abi, (_, data_type)), expr) in func_abi_info
-                        .args
-                        .iter()
-                        .zip(&decl.arguments)
-                        .zip(args_exprs)
-                    {
-                        let val = self.compile_expression(expr, scope);
-                        if data_type.is_scalar() {
-                            args.push(val);
-                            continue;
-                        }
-
-                        match abi {
-                            ABIArgInfo::Single(piece) => match piece.class {
-                                X64Class::CLASS_NO_CLASS => {}
-                                X64Class::CLASS_MEMORY => {
-                                    let alloca = LLVMBuildAlloca(
-                                        self.builder,
-                                        self.to_llvm_type(data_type),
-                                        c"arg".as_ptr(),
-                                    );
-                                    LLVMBuildStore(self.builder, val, alloca);
-                                    args.push(alloca);
-                                }
-                                X64Class::CLASS_INTEGER => {
-                                    let ext = LLVMBuildZExtOrBitCast(
-                                        self.builder,
-                                        val,
-                                        LLVMInt64TypeInContext(self.context),
-                                        c"ext".as_ptr(),
-                                    );
-                                    args.push(ext);
-                                }
-                                X64Class::CLASS_SSE => {
-                                    args.push(val);
-                                }
-                                X64Class::CLASS_SSEUP => todo!(),
-                            },
-                            ABIArgInfo::Aggregate(pieces, words) => {
-                                let alloca = LLVMBuildAlloca(
-                                    self.builder,
-                                    self.to_llvm_type(data_type),
-                                    c"arg".as_ptr(),
-                                );
-                                LLVMBuildStore(self.builder, val, alloca);
-
-                                // Index the alloca'd struct ptr as if it's an array of
-                                // eightbytes and load the values piece by piece
-                                let word_type = LLVMInt64TypeInContext(self.context);
-                                for word in 0..*words {
-                                    let mut index = LLVMConstInt(
-                                        LLVMInt32TypeInContext(self.context),
-                                        word as u64,
-                                        0,
-                                    );
-                                    let ptr = LLVMBuildGEP2(
-                                        self.builder,
-                                        word_type,
-                                        alloca,
-                                        &mut index,
-                                        1,
-                                        c"gep".as_ptr(),
-                                    );
-                                    match pieces[word].class {
-                                        X64Class::CLASS_NO_CLASS | X64Class::CLASS_MEMORY => {
-                                            unreachable!()
-                                        }
-                                        X64Class::CLASS_INTEGER => {
-                                            // IR param is always i64, but I might need to store less
-                                            // bits. TODO: Possibly just change the IR param type
-                                            // itself instead of extending here.
-                                            let meaningful_bits_type = LLVMIntTypeInContext(
-                                                self.context,
-                                                pieces[word].meaningful_bits as u32,
-                                            );
-                                            let val = LLVMBuildLoad2(
-                                                self.builder,
-                                                meaningful_bits_type,
-                                                ptr,
-                                                c"int_val".as_ptr(),
-                                            );
-                                            let ext = LLVMBuildZExtOrBitCast(
-                                                self.builder,
-                                                val,
-                                                LLVMInt64TypeInContext(self.context),
-                                                c"ext".as_ptr(),
-                                            );
-                                            args.push(ext);
-                                        }
-                                        X64Class::CLASS_SSE => {
-                                            let p = LLVMGetParam(fn_ref, args.len() as u32);
-                                            let ty = LLVMTypeOf(p);
-                                            let val = LLVMBuildLoad2(
-                                                self.builder,
-                                                ty,
-                                                ptr,
-                                                c"float_val".as_ptr(),
-                                            );
-                                            args.push(val);
-                                        }
-                                        X64Class::CLASS_SSEUP => todo!(),
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    //TODO add params attributes to the call
-                    if decl.return_type.is_scalar() {
-                        LLVMBuildCall2(
-                            self.builder,
-                            fn_type,
-                            fn_ref,
-                            args.as_mut_ptr(),
-                            args.len() as u32,
-                            c"".as_ptr(),
-                        )
-                    } else if let Some(dst) = ret_ptr {
-                        LLVMBuildCall2(
-                            self.builder,
-                            fn_type,
-                            fn_ref,
-                            args.as_mut_ptr(),
-                            args.len() as u32,
-                            c"".as_ptr(),
-                        );
-                        LLVMBuildLoad2(
-                            self.builder,
-                            self.to_llvm_type(&decl.return_type),
-                            dst,
-                            c"call_retval".as_ptr(),
-                        )
-                    } else {
-                        let call_val = LLVMBuildCall2(
-                            self.builder,
-                            fn_type,
-                            fn_ref,
-                            args.as_mut_ptr(),
-                            args.len() as u32,
-                            c"".as_ptr(),
-                        );
-
-                        // Clang casts it by doing memcpy so
-                        let src_type = LLVMGetReturnType(LLVMGlobalGetValueType(fn_ref));
-                        let src =
-                            LLVMBuildAlloca(self.builder, src_type, c"callval.coerce".as_ptr());
-                        let dst_type = self.to_llvm_type(&decl.return_type);
-                        let dst = LLVMBuildAlloca(self.builder, dst_type, c"callval".as_ptr());
-
-                        LLVMBuildStore(self.builder, call_val, src);
-                        LLVMBuildMemCpy(
-                            self.builder,
-                            dst,
-                            LLVMGetAlignment(dst),
-                            src,
-                            LLVMGetAlignment(src),
-                            LLVMSizeOf(dst_type),
-                        );
-
-                        LLVMBuildLoad2(
-                            self.builder,
-                            self.to_llvm_type(&decl.return_type),
-                            dst,
-                            c"call_retval".as_ptr(),
-                        )
-                    }
-                }
+                TypedExprKind::Call(func, args_exprs) => call(self, scope, func, args_exprs),
             }
         }
     }

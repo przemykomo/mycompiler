@@ -47,6 +47,7 @@ pub struct LLVMGen<'a> {
     pub errors: Vec<Error>,
     pub context: LLVMContextRef,
     pub builder: LLVMBuilderRef,
+    pub alloca_builder: LLVMBuilderRef,
     pub module: LLVMModuleRef,
     id_count: usize,
     pub data_layout: LLVMTargetDataRef,
@@ -57,6 +58,7 @@ impl<'a> LLVMGen<'a> {
     pub fn new(typechecker: &'a TypeChecker<'a>, context: LLVMContextRef) -> LLVMGen<'a> {
         unsafe {
             let builder = LLVMCreateBuilderInContext(context);
+            let alloca_builder = LLVMCreateBuilderInContext(context);
             let module = LLVMModuleCreateWithNameInContext(c"tmp".as_ptr(), context);
 
             LLVMInitializeX86Target();
@@ -92,6 +94,7 @@ impl<'a> LLVMGen<'a> {
                 errors: Vec::new(),
                 context,
                 builder,
+                alloca_builder,
                 module,
                 id_count: 0,
                 data_layout,
@@ -116,6 +119,7 @@ impl<'a> LLVMGen<'a> {
             unsafe {
                 let entry_block =
                     LLVMAppendBasicBlockInContext(self.context, fn_ref, c"entry".as_ptr());
+                LLVMPositionBuilderAtEnd(self.alloca_builder, entry_block);
                 LLVMPositionBuilderAtEnd(self.builder, entry_block);
 
                 let mut scope = Scope { vars: Vec::new() };

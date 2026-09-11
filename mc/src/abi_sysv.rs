@@ -293,7 +293,7 @@ enum X64Class {
 pub fn fun_prologue(
     llvmgen: &mut LLVMGen,
     function: &crate::typecheck::TypedFunc,
-    fn_ref: *mut llvm_sys::LLVMValue,
+    fn_ref: LLVMValueRef,
     func_abi_info: &FuncABIInfo,
     scope: &mut Scope,
 ) {
@@ -324,8 +324,8 @@ pub fn fun_prologue(
                 continue;
             }
 
-            let ptr = LLVMBuildAlloca(
-                llvmgen.builder,
+            let ptr = llvmgen.entry_alloca(
+                fn_ref,
                 llvmgen.to_llvm_type(&data_type),
                 CString::new(ident.ident.clone()).unwrap().as_ptr(),
             );
@@ -429,8 +429,8 @@ pub fn fun_prologue(
 
         // LLVM docs recommend to put all alloca at the function beginning
         for var in &function.scope.vars[function.prototype.arguments.len()..] {
-            let ptr = LLVMBuildAlloca(
-                llvmgen.builder,
+            let ptr = llvmgen.entry_alloca(
+                fn_ref,
                 llvmgen.to_llvm_type(&var.data_type),
                 CString::new(var.ident.ident.clone()).unwrap().as_ptr(),
             );
@@ -585,7 +585,7 @@ pub fn build_ret(
     llvmgen: &mut LLVMGen,
     scope: &mut Scope,
     return_type: &DataType,
-    fn_ref: *mut llvm_sys::LLVMValue,
+    fn_ref: LLVMValueRef,
     func_abi_info: &FuncABIInfo,
     expr: &Option<TypedExpr>,
 ) {
@@ -594,7 +594,7 @@ pub fn build_ret(
             LLVMBuildRetVoid(llvmgen.builder);
             return;
         };
-        let value = llvmgen.compile_expression(expr, scope);
+        let value = llvmgen.compile_expression(expr, scope, fn_ref);
         if return_type.is_scalar() {
             LLVMBuildRet(llvmgen.builder, value);
             return;
@@ -609,9 +609,10 @@ pub fn build_ret(
             return;
         }
         let src_type = llvmgen.to_llvm_type(return_type);
-        let src = LLVMBuildAlloca(llvmgen.builder, src_type, c"retval".as_ptr());
+
+        let src = llvmgen.entry_alloca(fn_ref, src_type, c"retval".as_ptr());
         let dst_type = LLVMGetReturnType(LLVMGlobalGetValueType(fn_ref));
-        let dst = LLVMBuildAlloca(llvmgen.builder, dst_type, c"retval.coerce".as_ptr());
+        let dst = llvmgen.entry_alloca(fn_ref, dst_type, c"retval.coerce".as_ptr());
         LLVMBuildStore(llvmgen.builder, value, src);
         LLVMBuildMemCpy(
             llvmgen.builder,
@@ -632,6 +633,7 @@ pub fn build_ret(
 
 pub fn call(
     llvmgen: &LLVMGen,
+    caller_fn_ref: LLVMValueRef,
     scope: &Scope,
     func: &String,
     args_exprs: &Vec<TypedExpr>,
@@ -640,8 +642,8 @@ pub fn call(
         let (decl, _) = llvmgen.typechecker.parser.get_function(func).unwrap();
         let func_abi_info = create_abi_info(llvmgen, decl);
         let func_c_str = CString::new(func.clone()).unwrap();
-        let fn_ref = LLVMGetNamedFunction(llvmgen.module, func_c_str.as_ptr());
-        let fn_type = LLVMGlobalGetValueType(fn_ref);
+        let called_fn_ref = LLVMGetNamedFunction(llvmgen.module, func_c_str.as_ptr());
+        let fn_type = LLVMGlobalGetValueType(called_fn_ref);
 
         let mut args: Vec<LLVMValueRef> = Vec::new();
         let ret_ptr = if decl.return_type.is_scalar() {
@@ -652,8 +654,8 @@ pub fn call(
                 ..
             } = func_abi_info.ret.pieces[0]
             {
-                let dst = LLVMBuildAlloca(
-                    llvmgen.builder,
+                let dst = llvmgen.entry_alloca(
+                    caller_fn_ref,
                     llvmgen.to_llvm_type(&decl.return_type),
                     c"ret".as_ptr(),
                 );
@@ -670,7 +672,7 @@ pub fn call(
             .zip(&decl.arguments)
             .zip(args_exprs)
         {
-            let val = llvmgen.compile_expression(expr, scope);
+            let val = llvmgen.compile_expression(expr, scope, caller_fn_ref);
             if data_type.is_scalar() {
                 args.push(val);
                 continue;
@@ -680,8 +682,8 @@ pub fn call(
                 match abi.pieces[0].class {
                     X64Class::CLASS_NO_CLASS => {}
                     X64Class::CLASS_MEMORY => {
-                        let alloca = LLVMBuildAlloca(
-                            llvmgen.builder,
+                        let alloca = llvmgen.entry_alloca(
+                            caller_fn_ref,
                             llvmgen.to_llvm_type(data_type),
                             c"arg".as_ptr(),
                         );
@@ -702,8 +704,8 @@ pub fn call(
                     }
                 }
             } else {
-                let alloca = LLVMBuildAlloca(
-                    llvmgen.builder,
+                let alloca = llvmgen.entry_alloca(
+                    caller_fn_ref,
                     llvmgen.to_llvm_type(data_type),
                     c"arg".as_ptr(),
                 );
@@ -750,7 +752,7 @@ pub fn call(
                             args.push(ext);
                         }
                         X64Class::CLASS_SSE => {
-                            let p = LLVMGetParam(fn_ref, args.len() as u32);
+                            let p = LLVMGetParam(called_fn_ref, args.len() as u32);
                             let ty = LLVMTypeOf(p);
                             let val =
                                 LLVMBuildLoad2(llvmgen.builder, ty, ptr, c"float_val".as_ptr());
@@ -765,7 +767,7 @@ pub fn call(
             LLVMBuildCall2(
                 llvmgen.builder,
                 fn_type,
-                fn_ref,
+                called_fn_ref,
                 args.as_mut_ptr(),
                 args.len() as u32,
                 c"".as_ptr(),
@@ -774,7 +776,7 @@ pub fn call(
             LLVMBuildCall2(
                 llvmgen.builder,
                 fn_type,
-                fn_ref,
+                called_fn_ref,
                 args.as_mut_ptr(),
                 args.len() as u32,
                 c"".as_ptr(),
@@ -789,17 +791,17 @@ pub fn call(
             let call_val = LLVMBuildCall2(
                 llvmgen.builder,
                 fn_type,
-                fn_ref,
+                called_fn_ref,
                 args.as_mut_ptr(),
                 args.len() as u32,
                 c"".as_ptr(),
             );
 
             // Clang casts it by doing memcpy so
-            let src_type = LLVMGetReturnType(LLVMGlobalGetValueType(fn_ref));
-            let src = LLVMBuildAlloca(llvmgen.builder, src_type, c"callval.coerce".as_ptr());
+            let src_type = LLVMGetReturnType(LLVMGlobalGetValueType(called_fn_ref));
+            let src = llvmgen.entry_alloca(caller_fn_ref, src_type, c"callval.coerce".as_ptr());
             let dst_type = llvmgen.to_llvm_type(&decl.return_type);
-            let dst = LLVMBuildAlloca(llvmgen.builder, dst_type, c"callval".as_ptr());
+            let dst = llvmgen.entry_alloca(caller_fn_ref, dst_type, c"callval".as_ptr());
 
             LLVMBuildStore(llvmgen.builder, call_val, src);
             LLVMBuildMemCpy(

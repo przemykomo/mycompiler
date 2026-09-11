@@ -47,7 +47,6 @@ pub struct LLVMGen<'a> {
     pub errors: Vec<Error>,
     pub context: LLVMContextRef,
     pub builder: LLVMBuilderRef,
-    pub alloca_builder: LLVMBuilderRef,
     pub module: LLVMModuleRef,
     id_count: usize,
     pub data_layout: LLVMTargetDataRef,
@@ -58,7 +57,6 @@ impl<'a> LLVMGen<'a> {
     pub fn new(typechecker: &'a TypeChecker<'a>, context: LLVMContextRef) -> LLVMGen<'a> {
         unsafe {
             let builder = LLVMCreateBuilderInContext(context);
-            let alloca_builder = LLVMCreateBuilderInContext(context);
             let module = LLVMModuleCreateWithNameInContext(c"tmp".as_ptr(), context);
 
             LLVMInitializeX86Target();
@@ -94,7 +92,6 @@ impl<'a> LLVMGen<'a> {
                 errors: Vec::new(),
                 context,
                 builder,
-                alloca_builder,
                 module,
                 id_count: 0,
                 data_layout,
@@ -119,7 +116,6 @@ impl<'a> LLVMGen<'a> {
             unsafe {
                 let entry_block =
                     LLVMAppendBasicBlockInContext(self.context, fn_ref, c"entry".as_ptr());
-                LLVMPositionBuilderAtEnd(self.alloca_builder, entry_block);
                 LLVMPositionBuilderAtEnd(self.builder, entry_block);
 
                 let mut scope = Scope { vars: Vec::new() };
@@ -225,7 +221,7 @@ impl<'a> LLVMGen<'a> {
                     then_block: then_scope,
                     else_block: else_scope,
                 } => {
-                    let condition = self.compile_expression(expr, scope);
+                    let condition = self.compile_expression(expr, scope, fn_ref);
                     let then_block = LLVMCreateBasicBlockInContext(
                         self.context,
                         CString::new(format!("if.then{}", self.alloc_id()))
@@ -281,7 +277,7 @@ impl<'a> LLVMGen<'a> {
                     build_ret(self, scope, return_type, fn_ref, func_abi_info, expr);
                 }
                 TypedStmtKind::Expression(expr) => {
-                    self.compile_expression(expr, scope);
+                    self.compile_expression(expr, scope, fn_ref);
                 }
                 TypedStmtKind::While { expr: _, block: _ } => {
                     todo!();
@@ -292,7 +288,6 @@ impl<'a> LLVMGen<'a> {
                     expr,
                     data_type: _,
                 } => {
-                    //TODO: move alloca to the function beginning
                     let ptr = scope
                         .vars
                         .iter()
@@ -301,9 +296,8 @@ impl<'a> LLVMGen<'a> {
                         .ptr;
 
                     if let Some(expr) = expr {
-                        let value = self.compile_expression(expr, scope);
+                        let value = self.compile_expression(expr, scope, fn_ref);
                         LLVMBuildStore(self.builder, value, ptr);
-                        //TODO: handle large structs
                     }
                 }
             }
@@ -323,7 +317,12 @@ impl<'a> LLVMGen<'a> {
         }
     }
 
-    pub fn compile_expression<'b>(&self, expr: &TypedExpr, scope: &Scope) -> LLVMValueRef {
+    pub fn compile_expression<'b>(
+        &self,
+        expr: &TypedExpr,
+        scope: &Scope,
+        fn_ref: LLVMValueRef,
+    ) -> LLVMValueRef {
         unsafe {
             match &expr.kind {
                 TypedExprKind::NumerLiteral(val) => {
@@ -352,8 +351,8 @@ impl<'a> LLVMGen<'a> {
                 TypedExprKind::Dereference(_typed_expr) => todo!(),
                 TypedExprKind::Arithmetic(op, lhs, rhs) => {
                     let ty = &lhs.inferred_type;
-                    let lhs = self.compile_expression(lhs, scope);
-                    let rhs = self.compile_expression(rhs, scope);
+                    let lhs = self.compile_expression(lhs, scope, fn_ref);
+                    let rhs = self.compile_expression(rhs, scope, fn_ref);
 
                     use DataType::*;
                     match ty {
@@ -394,8 +393,8 @@ impl<'a> LLVMGen<'a> {
                     }
                 }
                 TypedExprKind::Comparison(op, lhs, rhs) => {
-                    let lhs_v = self.compile_expression(lhs, scope);
-                    let rhs_v = self.compile_expression(rhs, scope);
+                    let lhs_v = self.compile_expression(lhs, scope, fn_ref);
+                    let rhs_v = self.compile_expression(rhs, scope, fn_ref);
                     if lhs.inferred_type.is_int() {
                         LLVMBuildICmp(self.builder, (*op).into(), lhs_v, rhs_v, c"cmp".as_ptr())
                     } else if lhs.inferred_type.is_float() {
@@ -406,15 +405,15 @@ impl<'a> LLVMGen<'a> {
                 }
                 TypedExprKind::Assignment(place, expr) => {
                     //TODO: move alloca to the function beginning
-                    let ptr = self.compile_place(place, scope);
-                    let value = self.compile_expression(expr, scope);
+                    let ptr = self.compile_place(place, scope, fn_ref);
+                    let value = self.compile_expression(expr, scope, fn_ref);
 
                     LLVMBuildStore(self.builder, value, ptr);
                     value
                     //TODO: handle large structs
                 }
                 TypedExprKind::MemberAccess(place, member) => {
-                    let ptr = self.compile_member_access(place, scope, member);
+                    let ptr = self.compile_member_access(place, scope, member, fn_ref);
                     LLVMBuildLoad2(
                         self.builder,
                         self.to_llvm_type(&expr.inferred_type),
@@ -439,7 +438,7 @@ impl<'a> LLVMGen<'a> {
                         val = LLVMBuildInsertValue(
                             self.builder,
                             val,
-                            self.compile_expression(expr, scope),
+                            self.compile_expression(expr, scope, fn_ref),
                             i as u32,
                             c"".as_ptr(),
                         );
@@ -447,12 +446,20 @@ impl<'a> LLVMGen<'a> {
 
                     val
                 }
-                TypedExprKind::Call(func, args_exprs) => call(self, scope, func, args_exprs),
+                TypedExprKind::Call(func, args_exprs) => {
+                    call(self, fn_ref, scope, func, args_exprs)
+                }
             }
         }
     }
 
-    fn compile_member_access(&self, place: &Place, scope: &Scope, member: &str) -> LLVMValueRef {
+    fn compile_member_access(
+        &self,
+        place: &Place,
+        scope: &Scope,
+        member: &str,
+        fn_ref: LLVMValueRef,
+    ) -> LLVMValueRef {
         let DataType::Struct(ident) = &place.inferred_type else {
             unreachable!()
         };
@@ -465,7 +472,7 @@ impl<'a> LLVMGen<'a> {
             .find(|s| s.ident.ident == ident.ident)
             .unwrap();
 
-        let ptr = self.compile_place(place, scope);
+        let ptr = self.compile_place(place, scope, fn_ref);
         let ptr = unsafe {
             LLVMBuildStructGEP2(
                 self.builder,
@@ -483,12 +490,35 @@ impl<'a> LLVMGen<'a> {
         ptr
     }
 
-    fn compile_place(&self, place: &Place, scope: &Scope) -> LLVMValueRef {
+    fn compile_place(&self, place: &Place, scope: &Scope, fn_ref: LLVMValueRef) -> LLVMValueRef {
         match &place.kind {
-            PlaceKind::Deref(expr) => self.compile_expression(expr, scope),
+            PlaceKind::Deref(expr) => self.compile_expression(expr, scope, fn_ref),
             PlaceKind::Variable(ident) => scope.find(ident).ptr,
             PlaceKind::Index(_ptr, _idx) => todo!(),
-            PlaceKind::Member(place, member) => self.compile_member_access(place, scope, member),
+            PlaceKind::Member(place, member) => {
+                self.compile_member_access(place, scope, member, fn_ref)
+            }
+        }
+    }
+
+    pub fn entry_alloca(
+        self: &Self,
+        fn_ref: LLVMValueRef,
+        llvm_type: LLVMTypeRef,
+        name: *const std::ffi::c_char,
+    ) -> LLVMValueRef {
+        unsafe {
+            let entry_builder = LLVMCreateBuilderInContext(self.context);
+            let entry_block = LLVMGetEntryBasicBlock(fn_ref);
+            let instr = LLVMGetFirstInstruction(entry_block);
+            if instr.is_null() {
+                LLVMPositionBuilderAtEnd(entry_builder, entry_block);
+            } else {
+                LLVMPositionBuilderBefore(entry_builder, instr);
+            }
+            let val = LLVMBuildAlloca(entry_builder, llvm_type, name);
+            LLVMDisposeBuilder(entry_builder);
+            val
         }
     }
 }

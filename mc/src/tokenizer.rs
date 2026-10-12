@@ -44,6 +44,7 @@ pub enum Token {
     Let,
     EOF,
     Bang,
+    Pipe,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -67,7 +68,7 @@ pub enum DataType {
     Pointer(Box<DataType>),
     Boolean,
     Void,
-    Struct(IdentifierSpanned), //TODO: Possibly change it to a Path/Vec<Identifier>
+    Struct(IdentifierSpanned),
 }
 
 impl DataType {
@@ -421,6 +422,7 @@ pub fn tokenize(contents: &str) -> TokenizedFile {
                 '{' => Token::CurlyBracketOpen,
                 '}' => Token::CurlyBracketClose,
                 '&' => Token::Ampersand,
+                '|' => Token::Pipe,
                 '[' => Token::SquareParenthesisOpen,
                 ']' => Token::SquareParenthesisClose,
                 '<' => Token::SmallerThan,

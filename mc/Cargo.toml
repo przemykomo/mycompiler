@@ -7,7 +7,7 @@ edition = "2024"
 
 [dependencies]
 bitflags = "2.11.0"
-llvm-sys = "221.0.0"
+llvm-sys = "231.0.1"
 object = { version = "0.37.1", features = ["build"] }
 
 # [lib]

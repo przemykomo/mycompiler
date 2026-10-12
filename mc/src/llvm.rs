@@ -178,7 +178,7 @@ impl<'a> LLVMGen<'a> {
                     LLVMArrayType2(self.to_llvm_type(data_type), *size as u64)
                 }
                 DataType::Pointer(_) => LLVMPointerTypeInContext(self.context, 0),
-                DataType::Boolean => LLVMInt8TypeInContext(self.context),
+                DataType::Boolean => LLVMInt1TypeInContext(self.context),
                 DataType::Void => LLVMVoidTypeInContext(self.context),
                 DataType::Struct(ident) => {
                     let s = self
@@ -326,7 +326,6 @@ impl<'a> LLVMGen<'a> {
         unsafe {
             match &expr.kind {
                 TypedExprKind::NumerLiteral(val) => {
-                    //TODO: maybe move it to typechecker?
                     if expr.inferred_type.is_int() {
                         LLVMConstInt(self.to_llvm_type(&expr.inferred_type), *val as u64, 1)
                     } else if expr.inferred_type.is_float() {
@@ -336,7 +335,9 @@ impl<'a> LLVMGen<'a> {
                     }
                 }
                 TypedExprKind::CharLiteral(_) => todo!(),
-                TypedExprKind::BoolLiteral(_) => todo!(),
+                TypedExprKind::BoolLiteral(b) => {
+                    LLVMConstInt(LLVMInt1TypeInContext(self.context), *b as u64, 0)
+                }
                 TypedExprKind::FloatLiteral(val) => {
                     LLVMConstReal(self.to_llvm_type(&expr.inferred_type), *val)
                 }
@@ -388,7 +389,6 @@ impl<'a> LLVMGen<'a> {
                                 LLVMBuildFDiv(self.builder, lhs, rhs, c"div".as_ptr())
                             }
                         },
-                        Struct(_ident) => todo!(),
                         _ => unreachable!(),
                     }
                 }
@@ -400,17 +400,15 @@ impl<'a> LLVMGen<'a> {
                     } else if lhs.inferred_type.is_float() {
                         LLVMBuildFCmp(self.builder, (*op).into(), lhs_v, rhs_v, c"cmp".as_ptr())
                     } else {
-                        todo!();
+                        unreachable!();
                     }
                 }
                 TypedExprKind::Assignment(place, expr) => {
-                    //TODO: move alloca to the function beginning
                     let ptr = self.compile_place(place, scope, fn_ref);
                     let value = self.compile_expression(expr, scope, fn_ref);
 
                     LLVMBuildStore(self.builder, value, ptr);
                     value
-                    //TODO: handle large structs
                 }
                 TypedExprKind::MemberAccess(place, member) => {
                     let ptr = self.compile_member_access(place, scope, member, fn_ref);

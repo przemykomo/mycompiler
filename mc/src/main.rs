@@ -19,8 +19,8 @@ pub mod ast;
 use crate::typecheck::TypeChecker;
 
 use crate::llvm::LLVMGen;
-pub mod llvm;
 pub mod abi_sysv;
+pub mod llvm;
 
 fn main() {
     let mut args: Vec<String> = env::args().collect();
@@ -48,31 +48,35 @@ fn main() {
         return;
     }
 
-    let mut typechecker = TypeChecker {
-        parser: &parser,
-        typed_functions: Vec::new(),
-        errors: Vec::new(),
-    };
+    dbg!(parser.struct_declarations);
+    dbg!(parser.function_declarations);
+    dbg!(parser.functions);
 
-    typechecker.typecheck();
-
-    if print_errors(&typechecker.errors, &lines, &read_file_path) {
-        return;
-    }
-
-    let context = unsafe { LLVMContextCreate() };
-    // let context = Context::create();
-    let mut llvmgen = LLVMGen::new(&typechecker, context);
-    llvmgen.generate_ir();
-
-    if print_errors(&llvmgen.errors, &lines, &read_file_path) {
-        return;
-    }
-    unsafe {
-        LLVMDumpModule(llvmgen.module);
-    }
-
-    llvmgen.build(write_file_path);
+    // let mut typechecker = TypeChecker {
+    //     parser: &parser,
+    //     typed_functions: Vec::new(),
+    //     errors: Vec::new(),
+    // };
+    //
+    // typechecker.typecheck();
+    //
+    // if print_errors(&typechecker.errors, &lines, &read_file_path) {
+    //     return;
+    // }
+    //
+    // let context = unsafe { LLVMContextCreate() };
+    // // let context = Context::create();
+    // let mut llvmgen = LLVMGen::new(&typechecker, context);
+    // llvmgen.generate_ir();
+    //
+    // if print_errors(&llvmgen.errors, &lines, &read_file_path) {
+    //     return;
+    // }
+    // unsafe {
+    //     LLVMDumpModule(llvmgen.module);
+    // }
+    //
+    // llvmgen.build(write_file_path);
     // llvmgen.module.print_to_stderr();
 
     // let mut irgen = IRGen::new(&parser);
